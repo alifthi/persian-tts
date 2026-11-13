@@ -1,0 +1,118 @@
+"""Typed experiment configuration (YAML <-> dataclasses), with dotted CLI overrides."""
+from dataclasses import asdict, dataclass, field, fields, is_dataclass
+from typing import List, Optional
+
+import yaml
+
+
+@dataclass
+class AudioConfig:
+    sample_rate: int = 22050
+    n_fft: int = 1024
+    hop_length: int = 256
+    win_length: int = 1024
+    n_mels: int = 80
+    fmin: float = 0.0
+    fmax: Optional[float] = None
+
+
+@dataclass
+class ModelConfig:
+    hidden_channels: int = 192
+    filter_channels: int = 768
+    n_heads: int = 2
+    n_layers: int = 6
+    kernel_size: int = 3
+    p_dropout: float = 0.1
+    inter_channels: int = 192
+    resblock_kernel_sizes: List[int] = field(default_factory=lambda: [3, 7, 11])
+    resblock_dilation_sizes: List[List[int]] = field(default_factory=lambda: [[1, 3, 5], [1, 3, 5], [1, 3, 5]])
+    upsample_rates: List[int] = field(default_factory=lambda: [8, 8, 2, 2])
+    upsample_initial_channel: int = 512
+    upsample_kernel_sizes: List[int] = field(default_factory=lambda: [16, 16, 4, 4])
+    gin_channels: int = 256  # speaker embedding size (multi-speaker only)
+    n_flows: int = 4
+    window_size: int = 4  # relative attention window
+    dp_filter_channels: int = 256
+    use_sdp: bool = False  # stochastic duration predictor (not TF-friendly); deterministic by default
+
+
+@dataclass
+class DataConfig:
+    root: str = "data/processed"
+    train_manifest: str = "data/processed/train.jsonl"
+    val_manifest: str = "data/processed/val.jsonl"
+    speakers: str = "data/processed/speakers.json"
+    add_blank: bool = True
+    max_frames_per_batch: int = 20000
+    max_batch_size: int = 32
+    num_workers: int = 8
+
+
+@dataclass
+class TrainConfig:
+    seed: int = 1234
+    max_steps: int = 500_000
+    learning_rate: float = 2e-4
+    betas: List[float] = field(default_factory=lambda: [0.8, 0.99])
+    eps: float = 1e-9
+    lr_decay: float = 0.999875  # per epoch-equivalent; applied per step as decay**(1/steps_per_epoch)
+    warmup_steps: int = 1000
+    grad_clip: float = 100.0
+    precision: str = "bf16"  # bf16 | fp16 | fp32
+    segment_size: int = 8192  # waveform samples decoded per item (random slice)
+    c_mel: float = 45.0
+    c_kl: float = 1.0
+    log_every: int = 50
+    eval_every: int = 2000
+    save_every: int = 5000
+    keep_last: int = 5
+    ema_decay: float = 0.9995
+    init_from: Optional[str] = None  # warm-start checkpoint (e.g. from a larger run); must be commercially licensed
+    compile: bool = False
+
+
+@dataclass
+class ExperimentConfig:
+    name: str = "persian-vits"
+    out_dir: str = "runs"
+    audio: AudioConfig = field(default_factory=AudioConfig)
+    model: ModelConfig = field(default_factory=ModelConfig)
+    data: DataConfig = field(default_factory=DataConfig)
+    train: TrainConfig = field(default_factory=TrainConfig)
+
+
+def _build(cls, d):
+    kw = {}
+    for f in fields(cls):
+        if f.name in d:
+            v = d[f.name]
+            kw[f.name] = _build(f.type if isinstance(f.type, type) else globals()[f.type], v) \
+                if is_dataclass(f.default_factory() if callable(f.default_factory) else None) else v
+    unknown = set(d) - {f.name for f in fields(cls)}
+    if unknown:
+        raise KeyError(f"unknown config keys for {cls.__name__}: {unknown}")
+    return cls(**kw)
+
+
+def load_config(path: Optional[str] = None, overrides: Optional[List[str]] = None) -> ExperimentConfig:
+    d = yaml.safe_load(open(path, encoding="utf-8")) if path else {}
+    d = d or {}
+    for o in overrides or []:
+        key, val = o.split("=", 1)
+        cur = d
+        *parents, last = key.split(".")
+        for p in parents:
+            cur = cur.setdefault(p, {})
+        v = yaml.safe_load(val)
+        if isinstance(v, str):
+            try:
+                v = float(v)  # YAML 1.1 reads '1e-4' as a string
+            except ValueError:
+                pass
+        cur[last] = v
+    return _build(ExperimentConfig, d)
+
+
+def to_dict(cfg) -> dict:
+    return asdict(cfg)

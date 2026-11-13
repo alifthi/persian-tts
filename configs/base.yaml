@@ -1,0 +1,25 @@
+# Persian VITS, 22.05 kHz, multi-speaker. Tuned for 1-8x 24GB+ GPUs.
+name: persian-vits-base
+out_dir: runs
+audio: {sample_rate: 22050, n_fft: 1024, hop_length: 256, win_length: 1024, n_mels: 80, fmin: 0.0, fmax: null}
+model:
+  hidden_channels: 192
+  filter_channels: 768
+  n_heads: 2
+  n_layers: 6
+  gin_channels: 256
+  use_sdp: false
+data:
+  root: data/processed
+  train_manifest: data/processed/train.jsonl
+  val_manifest: data/processed/val.jsonl
+  speakers: data/processed/speakers.json
+  max_frames_per_batch: 20000
+  max_batch_size: 32
+  num_workers: 8
+train:
+  max_steps: 500000
+  learning_rate: 2.0e-4
+  precision: bf16
+  eval_every: 2000
+  save_every: 5000
