@@ -79,12 +79,17 @@ class Trainer:
         self.net_g = SynthesizerTrn(len(SYMBOLS), a.n_fft // 2 + 1, seg_frames, len(self.speakers), cfg.model).to(self.device)
         self.net_d = MultiPeriodDiscriminator().to(self.device)
         t = cfg.train
-        self.optim_g = torch.optim.AdamW(self.net_g.parameters(), t.learning_rate, betas=tuple(t.betas), eps=t.eps)
-        self.optim_d = torch.optim.AdamW(self.net_d.parameters(), t.learning_rate, betas=tuple(t.betas), eps=t.eps)
+        dec_ids = {id(p) for p in self.net_g.dec.parameters()}
+        groups = [dict(params=[p for p in self.net_g.parameters() if id(p) not in dec_ids]),
+                  dict(params=list(self.net_g.dec.parameters()))]  # group 1 = decoder (vocoder)
+        self.optim_g = torch.optim.AdamW(groups, t.learning_rate, betas=tuple(t.betas), eps=t.eps)
+        self.optim_d = torch.optim.AdamW(self.net_d.parameters(), t.learning_rate_d, betas=tuple(t.betas_d), eps=t.eps)
         steps_per_epoch = max(1, len(self.sampler))
         gamma = t.lr_decay ** (1.0 / steps_per_epoch)
         lr_lambda = lambda s: min(1.0, (s + 1) / max(1, t.warmup_steps)) * gamma ** s  # noqa: E731
-        self.sched_g = torch.optim.lr_scheduler.LambdaLR(self.optim_g, lr_lambda)
+        # decoder lr is 0 during the freeze window (AdamW decay is lr-scaled, so weights stay exact)
+        dec_lambda = lambda s: 0.0 if s < t.freeze_decoder_steps else lr_lambda(s)  # noqa: E731
+        self.sched_g = torch.optim.lr_scheduler.LambdaLR(self.optim_g, [lr_lambda, dec_lambda])
         self.sched_d = torch.optim.lr_scheduler.LambdaLR(self.optim_d, lr_lambda)
 
         self.amp_dtype = {"bf16": torch.bfloat16, "fp16": torch.float16}.get(t.precision)
@@ -114,14 +119,18 @@ class Trainer:
         self._stop = True
 
     def _warm_start(self, path):
-        sd = torch.load(path, map_location="cpu", weights_only=False)
-        sd = sd.get("ema") or sd.get("net_g") or sd
-        own = self.net_g.state_dict()
-        ok = {k: v for k, v in sd.items() if k in own and own[k].shape == v.shape}
-        self.net_g.load_state_dict(ok, strict=False)
-        if self.is_main:
-            print(f"warm start from {path}: loaded {len(ok)}/{len(own)} tensors "
-                  f"(skipped {len(own) - len(ok)}, e.g. new speaker table/vocab)")
+        ck = torch.load(path, map_location="cpu", weights_only=False)
+        for name, net, key in (("G", self.net_g, "ema" if "ema" in ck else "net_g"), ("D", self.net_d, "net_d")):
+            sd = ck.get(key)
+            if sd is None:
+                continue
+            own = net.state_dict()
+            ok = {k: v for k, v in sd.items() if k in own and own[k].shape == v.shape}
+            net.load_state_dict(ok, strict=False)
+            if self.is_main:
+                missing = [k for k in own if k not in ok]
+                print(f"warm start {name} from {path}: loaded {len(ok)}/{len(own)} tensors; "
+                      f"newly initialized: {sorted({m.split('.')[0] + '.' + m.split('.')[1] for m in missing})}")
 
     def _maybe_resume(self):
         latest = self.ckpt_dir / "latest.pt"
@@ -221,7 +230,7 @@ class Trainer:
         tot_mel, tot_dur, n = 0.0, 0.0, 0
         for i, batch in enumerate(dl):
             b = {k: v.to(self.device) for k, v in batch.items()}
-            sid = b["sid"] if g.emb_g is not None else None
+            sid = b["sid"]
             gg = g._g(sid)
             x, m_p, logs_p, x_mask = g.enc_p(b["text"], b["text_lengths"])
             z, _, _, y_mask = g.enc_q(b["spec"], b["spec_lengths"], g=gg)

@@ -115,15 +115,16 @@ class Encoder(nn.Module):
     def __init__(self, hidden, filter_ch, n_heads, n_layers, kernel_size=1, p_dropout=0.0, window_size=4):
         super().__init__()
         self.drop = nn.Dropout(p_dropout)
-        self.attn = nn.ModuleList(MultiHeadAttention(hidden, n_heads, p_dropout, window_size) for _ in range(n_layers))
-        self.norm1 = nn.ModuleList(LayerNorm(hidden) for _ in range(n_layers))
-        self.ffn = nn.ModuleList(FFN(hidden, hidden, filter_ch, kernel_size, p_dropout) for _ in range(n_layers))
-        self.norm2 = nn.ModuleList(LayerNorm(hidden) for _ in range(n_layers))
+        # attribute names match the reference VITS / Piper checkpoints
+        self.attn_layers = nn.ModuleList(MultiHeadAttention(hidden, n_heads, p_dropout, window_size) for _ in range(n_layers))
+        self.norm_layers_1 = nn.ModuleList(LayerNorm(hidden) for _ in range(n_layers))
+        self.ffn_layers = nn.ModuleList(FFN(hidden, hidden, filter_ch, kernel_size, p_dropout) for _ in range(n_layers))
+        self.norm_layers_2 = nn.ModuleList(LayerNorm(hidden) for _ in range(n_layers))
 
     def forward(self, x, x_mask):
         attn_mask = x_mask.unsqueeze(2) * x_mask.unsqueeze(-1)
         x = x * x_mask
-        for a, n1, f, n2 in zip(self.attn, self.norm1, self.ffn, self.norm2):
+        for a, n1, f, n2 in zip(self.attn_layers, self.norm_layers_1, self.ffn_layers, self.norm_layers_2):
             x = n1(x + self.drop(a(x, attn_mask)))
             x = n2(x + self.drop(f(x, x_mask)))
         return x * x_mask
@@ -210,5 +211,22 @@ class ResBlock(nn.Module):
             xt = c1(xt if x_mask is None else xt * x_mask)
             xt = F.leaky_relu(xt, LRELU_SLOPE)
             xt = c2(xt if x_mask is None else xt * x_mask)
+            x = xt + x
+        return x if x_mask is None else x * x_mask
+
+
+class ResBlock2(nn.Module):
+    """HiFi-GAN V2/V3 residual block (one conv per dilation)."""
+
+    def __init__(self, channels, kernel_size=3, dilation=(1, 3)):
+        super().__init__()
+        self.convs = nn.ModuleList(weight_norm(nn.Conv1d(channels, channels, kernel_size, 1, dilation=d,
+                                                         padding=get_padding(kernel_size, d))) for d in dilation)
+        self.convs.apply(init_weights)
+
+    def forward(self, x, x_mask=None):
+        for c in self.convs:
+            xt = F.leaky_relu(x, LRELU_SLOPE)
+            xt = c(xt if x_mask is None else xt * x_mask)
             x = xt + x
         return x if x_mask is None else x * x_mask

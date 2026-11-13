@@ -73,7 +73,7 @@ class Generator(nn.Module):
     """HiFi-GAN V1 generator."""
 
     def __init__(self, initial_ch, resblock_kernel_sizes, resblock_dilation_sizes, upsample_rates,
-                 upsample_initial_channel, upsample_kernel_sizes, gin_channels=0):
+                 upsample_initial_channel, upsample_kernel_sizes, gin_channels=0, resblock="2"):
         super().__init__()
         self.num_kernels = len(resblock_kernel_sizes)
         self.conv_pre = nn.Conv1d(initial_ch, upsample_initial_channel, 7, 1, padding=3)
@@ -87,7 +87,7 @@ class Generator(nn.Module):
         for i in range(len(self.ups)):
             ch = upsample_initial_channel // (2 ** (i + 1))
             for k, d in zip(resblock_kernel_sizes, resblock_dilation_sizes):
-                self.resblocks.append(modules.ResBlock(ch, k, d))
+                self.resblocks.append((modules.ResBlock if str(resblock) == "1" else modules.ResBlock2)(ch, k, d))
         self.conv_post = nn.Conv1d(ch, 1, 7, 1, padding=3, bias=False)
         self.ups.apply(init_weights)
         self.cond = nn.Conv1d(gin_channels, upsample_initial_channel, 1) if gin_channels else None
@@ -111,22 +111,27 @@ class SynthesizerTrn(nn.Module):
         super().__init__()
         self.segment_size = segment_size  # in frames
         self.n_speakers = n_speakers
-        gin = cfg.gin_channels if n_speakers > 1 else 0
+        # speaker conditioning is always on (even for 1 speaker) so pretrained conditioning layers are reused
+        gin = cfg.gin_channels
         self.enc_p = TextEncoder(n_vocab, cfg.inter_channels, cfg.hidden_channels, cfg.filter_channels,
                                  cfg.n_heads, cfg.n_layers, cfg.kernel_size, cfg.p_dropout, cfg.window_size)
         self.dec = Generator(cfg.inter_channels, cfg.resblock_kernel_sizes, cfg.resblock_dilation_sizes,
-                             cfg.upsample_rates, cfg.upsample_initial_channel, cfg.upsample_kernel_sizes, gin)
+                             cfg.upsample_rates, cfg.upsample_initial_channel, cfg.upsample_kernel_sizes, gin,
+                             cfg.resblock)
         self.enc_q = PosteriorEncoder(spec_channels, cfg.inter_channels, cfg.hidden_channels, 5, 1, 16, gin)
         self.flow = modules.ResidualCouplingBlock(cfg.inter_channels, cfg.hidden_channels, 5, 1, 4,
                                                   cfg.n_flows, gin)
         self.dp = DurationPredictor(cfg.hidden_channels, cfg.dp_filter_channels, 3, 0.5, gin)
-        self.emb_g = nn.Embedding(n_speakers, gin) if n_speakers > 1 else None
+        self.emb_g = nn.Embedding(max(1, n_speakers), gin)
 
-    def _g(self, sid):
-        return self.emb_g(sid).unsqueeze(-1) if self.emb_g is not None and sid is not None else None
+    def _g(self, sid, batch_ref=None):
+        if sid is None:
+            ref = batch_ref if batch_ref is not None else self.emb_g.weight
+            sid = torch.zeros(ref.shape[0] if batch_ref is not None else 1, dtype=torch.long, device=ref.device)
+        return self.emb_g(sid).unsqueeze(-1)
 
     def forward(self, x, x_lengths, y, y_lengths, sid=None):
-        g = self._g(sid)
+        g = self._g(sid, x)
         x, m_p, logs_p, x_mask = self.enc_p(x, x_lengths)
         z, m_q, logs_q, y_mask = self.enc_q(y, y_lengths, g=g)
         z_p = self.flow(z, y_mask, g=g)
@@ -163,7 +168,7 @@ class SynthesizerTrn(nn.Module):
         """Export entry point. scales = [noise_scale, length_scale, noise_scale_w] (noise_scale_w unused:
         deterministic duration predictor; kept for Piper-compatible I/O)."""
         noise_scale, length_scale = scales[0], scales[1]
-        g = self._g(sid)
+        g = self._g(sid, x)
         x, m_p, logs_p, x_mask = self.enc_p(x, x_lengths)
         logw = self.dp(x, x_mask, g=g)
         w = torch.exp(logw) * x_mask * length_scale
@@ -236,9 +241,9 @@ class DiscriminatorS(nn.Module):
 
 
 class MultiPeriodDiscriminator(nn.Module):
-    def __init__(self, periods=(2, 3, 5, 7, 11)):
+    def __init__(self, periods=(2, 3, 5, 7, 11), use_spectral_norm=False):
         super().__init__()
-        self.discriminators = nn.ModuleList([DiscriminatorS(use_spectral_norm=True)] +
+        self.discriminators = nn.ModuleList([DiscriminatorS(use_spectral_norm)] +
                                             [DiscriminatorP(p) for p in periods])
 
     def forward(self, y, y_hat):

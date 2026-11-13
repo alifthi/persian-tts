@@ -1,25 +1,27 @@
-# Persian VITS, 22.05 kHz, multi-speaker. Tuned for 1-8x 24GB+ GPUs.
-name: persian-vits-base
+# Persian VITS fine-tuned from Piper `_base_model` (LibriTTS-R, 904 speakers), 22.05 kHz.
+# 1) python scripts/prepare_data.py --out data/processed
+# 2) python scripts/convert_piper_checkpoint.py --ckpt .../base_model.ckpt --piper-config .../config.json \
+#        --speakers data/processed/speakers.json --out data/pretrained/persian_init.pt
+# 3) torchrun --nproc_per_node=N scripts/train.py -c configs/base.yaml
+name: persian-vits-finetune
 out_dir: runs
 audio: {sample_rate: 22050, n_fft: 1024, hop_length: 256, win_length: 1024, n_mels: 80, fmin: 0.0, fmax: null}
-model:
-  hidden_channels: 192
-  filter_channels: 768
-  n_heads: 2
-  n_layers: 6
-  gin_channels: 256
-  use_sdp: false
+model: {}            # defaults == Piper base_model architecture (required to load the weights)
 data:
   root: data/processed
   train_manifest: data/processed/train.jsonl
   val_manifest: data/processed/val.jsonl
   speakers: data/processed/speakers.json
-  max_frames_per_batch: 20000
+  max_frames_per_batch: 20000   # ~32 x 7s utterances; lower for <24GB GPUs
   max_batch_size: 32
   num_workers: 8
 train:
-  max_steps: 500000
+  init_from: data/pretrained/persian_init.pt
+  freeze_decoder_steps: 10000   # let the new text encoder / duration predictor adapt before touching the vocoder
+  max_steps: 300000
   learning_rate: 2.0e-4
+  learning_rate_d: 1.0e-4
+  warmup_steps: 1000
   precision: bf16
   eval_every: 2000
   save_every: 5000

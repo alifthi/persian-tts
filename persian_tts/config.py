@@ -25,12 +25,14 @@ class ModelConfig:
     kernel_size: int = 3
     p_dropout: float = 0.1
     inter_channels: int = 192
-    resblock_kernel_sizes: List[int] = field(default_factory=lambda: [3, 7, 11])
-    resblock_dilation_sizes: List[List[int]] = field(default_factory=lambda: [[1, 3, 5], [1, 3, 5], [1, 3, 5]])
-    upsample_rates: List[int] = field(default_factory=lambda: [8, 8, 2, 2])
-    upsample_initial_channel: int = 512
-    upsample_kernel_sizes: List[int] = field(default_factory=lambda: [16, 16, 4, 4])
-    gin_channels: int = 256  # speaker embedding size (multi-speaker only)
+    # Decoder defaults match the Piper `_base_model` checkpoint we fine-tune from.
+    resblock: str = "2"
+    resblock_kernel_sizes: List[int] = field(default_factory=lambda: [3, 5, 7])
+    resblock_dilation_sizes: List[List[int]] = field(default_factory=lambda: [[1, 2], [2, 6], [3, 12]])
+    upsample_rates: List[int] = field(default_factory=lambda: [8, 8, 4])
+    upsample_initial_channel: int = 256
+    upsample_kernel_sizes: List[int] = field(default_factory=lambda: [16, 16, 8])
+    gin_channels: int = 512  # speaker embedding size (multi-speaker only)
     n_flows: int = 4
     window_size: int = 4  # relative attention window
     dp_filter_channels: int = 256
@@ -54,7 +56,10 @@ class TrainConfig:
     seed: int = 1234
     max_steps: int = 500_000
     learning_rate: float = 2e-4
+    learning_rate_d: float = 1e-4
     betas: List[float] = field(default_factory=lambda: [0.8, 0.99])
+    betas_d: List[float] = field(default_factory=lambda: [0.5, 0.9])
+    freeze_decoder_steps: int = 0  # keep pretrained vocoder fixed while the new text encoder adapts
     eps: float = 1e-9
     lr_decay: float = 0.999875  # per epoch-equivalent; applied per step as decay**(1/steps_per_epoch)
     warmup_steps: int = 1000

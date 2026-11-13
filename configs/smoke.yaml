@@ -1,13 +1,13 @@
-# Tiny config to validate the whole pipeline on a laptop GPU (4GB) in minutes.
+# Full-size fine-tune architecture on a tiny subset: validates the pipeline on a 4GB laptop GPU.
 name: smoke
 out_dir: runs
-model: {hidden_channels: 64, filter_channels: 128, inter_channels: 64, n_layers: 2, upsample_initial_channel: 128, gin_channels: 32, dp_filter_channels: 64}
 data:
   root: data/smoke
   train_manifest: data/smoke/train.jsonl
   val_manifest: data/smoke/val.jsonl
   speakers: data/smoke/speakers.json
-  max_frames_per_batch: 2000
-  max_batch_size: 4
+  max_frames_per_batch: 1200
+  max_batch_size: 2
   num_workers: 2
-train: {max_steps: 60, log_every: 10, eval_every: 30, save_every: 30, warmup_steps: 10, precision: bf16}
+train: {init_from: data/pretrained/persian_init_smoke.pt, freeze_decoder_steps: 20, max_steps: 40, segment_size: 4096,
+        log_every: 10, eval_every: 20, save_every: 20, warmup_steps: 10, precision: bf16}
