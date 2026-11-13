@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+# data & artifacts (never commit)
+data/
+runs/
+checkpoints/
+exports/
+*.wav
+*.onnx
+*.tflite
+*.pt
+*.pth
+*.safetensors
+saved_model/

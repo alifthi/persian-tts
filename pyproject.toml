@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "persian-tts"
+version = "0.1.0"
+description = "Commercially-licensable Persian (Farsi) VITS text-to-speech: data pipeline, training, ONNX/TensorFlow export."
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+dependencies = [
+  "torch>=2.3",
+  "torchaudio>=2.3",
+  "numpy",
+  "scipy",
+  "soundfile",
+  "librosa",
+  "numba",
+  "pyyaml",
+  "tensorboard",
+  "datasets>=3.0",
+  "huggingface_hub>=0.24",
+  "tqdm",
+]
+
+[project.optional-dependencies]
+export = ["onnx>=1.16", "onnxruntime>=1.18", "onnxsim", "onnx2tf", "tensorflow>=2.16", "tf_keras", "onnx_graphsurgeon", "sng4onnx", "psutil"]
+dev = ["pytest"]
+
+[tool.setuptools.packages.find]
+include = ["persian_tts*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
