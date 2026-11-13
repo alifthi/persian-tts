@@ -24,10 +24,11 @@ class LayerNorm(nn.Module):
         self.gamma = nn.Parameter(torch.ones(channels))
         self.beta = nn.Parameter(torch.zeros(channels))
         self.eps = eps
+        self.channels = channels
 
     def forward(self, x):
         x = x.transpose(1, -1)
-        x = F.layer_norm(x, (x.size(-1),), self.gamma, self.beta, self.eps)
+        x = F.layer_norm(x, (self.channels,), self.gamma, self.beta, self.eps)  # static shape for export
         return x.transpose(1, -1)
 
 
