@@ -23,7 +23,7 @@ def sequence_mask(length: torch.Tensor, max_length=None) -> torch.Tensor:
 def generate_path(duration: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
     """duration: [b, 1, t_x]; mask: [b, 1, t_y, t_x] -> hard alignment path [b, 1, t_y, t_x]. Export-friendly."""
     b, _, t_y, t_x = mask.shape
-    cum = torch.cumsum(duration, -1).view(b * t_x)
+    cum = torch.cumsum(duration.reshape(b, t_x), dim=1).reshape(b * t_x)  # 2-D cumsum: layout-safe for onnx2tf
     path = sequence_mask(cum, t_y).to(mask.dtype).view(b, t_x, t_y)
     path = path - F.pad(path, [0, 0, 1, 0, 0, 0])[:, :-1]
     return path.unsqueeze(1).transpose(2, 3) * mask

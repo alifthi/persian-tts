@@ -14,6 +14,24 @@ from .commons import LRELU_SLOPE, get_padding, init_weights
 from .monotonic_align import maximum_path
 
 
+def _frac(x):
+    return x - torch.floor(x)  # export-friendly frac for x >= 0
+
+
+def _hash_gaussian(ref: torch.Tensor, seed: torch.Tensor) -> torch.Tensor:
+    """Pseudo-random N(0,1) noise shaped like `ref` using only elementwise math (sin-hash + Box-Muller).
+
+    Lets the graph run where random ops are unsupported (onnx2tf / TFLite). `seed` varies the noise.
+    """
+    c = torch.arange(ref.shape[1], device=ref.device, dtype=ref.dtype)
+    t = torch.arange(ref.shape[2], device=ref.device, dtype=ref.dtype)
+    idx = (c.unsqueeze(1) * 1000.0 + t.unsqueeze(0)).unsqueeze(0) + seed * 7.123  # [1, C, T], broadcasts over batch
+    idx = idx + torch.zeros_like(ref)
+    u1 = _frac(torch.abs(torch.sin(idx * 12.9898) * 43758.5453)).clamp(1e-6, 1.0)
+    u2 = _frac(torch.abs(torch.sin(idx * 78.233) * 24634.6345))
+    return torch.sqrt(-2.0 * torch.log(u1)) * torch.cos(6.283185307 * u2)
+
+
 class TextEncoder(nn.Module):
     def __init__(self, n_vocab, out_channels, hidden, filter_ch, n_heads, n_layers, kernel_size, p_dropout, window_size):
         super().__init__()
@@ -123,6 +141,8 @@ class SynthesizerTrn(nn.Module):
                                                   cfg.n_flows, gin)
         self.dp = DurationPredictor(cfg.hidden_channels, cfg.dp_filter_channels, 3, 0.5, gin)
         self.emb_g = nn.Embedding(max(1, n_speakers), gin)
+        self.portable_noise = False  # True: RNG-free Gaussian noise (TensorFlow/TFLite export)
+        self.static_max_frames = None  # int: fixed output frames (static shapes for TensorFlow/TFLite)
 
     def _g(self, sid, batch_ref=None):
         if sid is None:
@@ -174,12 +194,15 @@ class SynthesizerTrn(nn.Module):
         w = torch.exp(logw) * x_mask * length_scale
         w_ceil = torch.ceil(w)
         y_lengths = torch.clamp_min(torch.sum(w_ceil, [1, 2]), 1).long()
-        y_mask = commons.sequence_mask(y_lengths, None).unsqueeze(1).to(x_mask.dtype)
+        if self.static_max_frames:
+            y_lengths = torch.clamp_max(y_lengths, self.static_max_frames)
+        y_mask = commons.sequence_mask(y_lengths, self.static_max_frames).unsqueeze(1).to(x_mask.dtype)
         attn_mask = x_mask.unsqueeze(2) * y_mask.unsqueeze(-1)
         attn = commons.generate_path(w_ceil, attn_mask)
         m_p = torch.matmul(attn.squeeze(1), m_p.transpose(1, 2)).transpose(1, 2)
         logs_p = torch.matmul(attn.squeeze(1), logs_p.transpose(1, 2)).transpose(1, 2)
-        z_p = m_p + torch.randn_like(m_p) * torch.exp(logs_p) * noise_scale
+        noise = _hash_gaussian(m_p, scales[2]) if self.portable_noise else torch.randn_like(m_p)
+        z_p = m_p + noise * torch.exp(logs_p) * noise_scale
         z = self.flow(z_p, y_mask, g=g, reverse=True)
         o = self.dec(z * y_mask, g=g)
         return o, y_lengths

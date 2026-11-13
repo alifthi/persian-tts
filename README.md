@@ -48,7 +48,8 @@ tensorboard --logdir runs
 
 # 4. export + verify
 python scripts/export_onnx.py --ckpt runs/persian-vits-finetune/checkpoints/best.pt --out exports/onnx
-.venv-tf/bin/python scripts/export_tf.py --onnx exports/onnx/model.onnx --out exports/tf   # Python <= 3.12 env
+python scripts/export_onnx.py --ckpt .../best.pt --out exports/onnx_tf --portable   # static shapes, RNG-free noise
+.venv-tf/bin/python scripts/export_tf.py --onnx exports/onnx_tf/model.onnx --out exports/tf   # SavedModel + TFLite
 
 # 5. listen
 python scripts/synthesize.py --onnx exports/onnx/model.onnx --text "سلام، حال شما چطور است؟" --out hi.wav
@@ -58,6 +59,13 @@ python scripts/push_to_hub.py --ckpt .../best.pt --onnx-dir exports/onnx --tf-di
   --data-stats data/processed/stats.json --repo-id <org>/persian-vits --dry-run
 ```
 `configs/smoke.yaml` runs the whole pipeline on a 4 GB GPU in about a minute.
+
+TensorFlow environment (TF has no Python 3.14 wheels):
+`conda create -p .venv-tf python=3.12 && .venv-tf/bin/pip install "tensorflow==2.19.*" tf_keras onnx2tf onnx==1.17.0 onnxruntime onnxsim onnx_graphsurgeon sng4onnx sne4onnx psutil ai_edge_litert`
+
+Measured export accuracy (max absolute error on the waveform): ONNX vs PyTorch ≤ 2e-5,
+TensorFlow vs ONNX ≤ 1.2e-5, TFLite fp32 vs ONNX ≤ 8e-6. The TF/TFLite model takes input padded to 400 tokens
+and returns a fixed 30 s buffer plus `output_lengths`, the number of valid samples.
 
 ## Training details
 - GAN training: mel L1 ×45, KL, feature matching, LSGAN with MPD+MSD. Generator and discriminator are both warm-started from Piper.

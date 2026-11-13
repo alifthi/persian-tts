@@ -100,15 +100,16 @@ class MultiHeadAttention(nn.Module):
 class FFN(nn.Module):
     def __init__(self, in_ch, out_ch, filter_ch, kernel_size, p_dropout=0.0):
         super().__init__()
-        self.pad = kernel_size // 2
-        self.conv_1 = nn.Conv1d(in_ch, filter_ch, kernel_size)
-        self.conv_2 = nn.Conv1d(filter_ch, out_ch, kernel_size)
+        assert kernel_size % 2 == 1
+        # built-in symmetric padding == F.pad for odd kernels; avoids a standalone Pad op (onnx2tf layout issue)
+        self.conv_1 = nn.Conv1d(in_ch, filter_ch, kernel_size, padding=kernel_size // 2)
+        self.conv_2 = nn.Conv1d(filter_ch, out_ch, kernel_size, padding=kernel_size // 2)
         self.drop = nn.Dropout(p_dropout)
 
     def forward(self, x, x_mask):
-        x = self.conv_1(F.pad(x * x_mask, [self.pad, self.pad]))
+        x = self.conv_1(x * x_mask)
         x = self.drop(torch.relu(x))
-        x = self.conv_2(F.pad(x * x_mask, [self.pad, self.pad]))
+        x = self.conv_2(x * x_mask)
         return x * x_mask
 
 
@@ -147,11 +148,16 @@ class WN(nn.Module):
 
     def forward(self, x, x_mask, g=None):
         output = torch.zeros_like(x)
-        if g is not None and self.cond_layer is not None:
-            g = self.cond_layer(g)
+        use_g = g is not None and self.cond_layer is not None
+        if use_g:  # slice the conv *weights* per layer (constants after export) instead of the activations
+            w, b = self.cond_layer.weight, self.cond_layer.bias
         for i in range(self.n_layers):
             x_in = self.in_layers[i](x)
-            g_l = g[:, i * 2 * self.hidden:(i + 1) * 2 * self.hidden] if g is not None else torch.zeros_like(x_in)
+            if use_g:
+                s, e = i * 2 * self.hidden, (i + 1) * 2 * self.hidden
+                g_l = F.conv1d(g, w[s:e], b[s:e])
+            else:
+                g_l = torch.zeros_like(x_in)
             acts = self.drop(fused_add_tanh_sigmoid_multiply(x_in, g_l, self.hidden))
             rs = self.res_skip_layers[i](acts)
             if i < self.n_layers - 1:
@@ -185,14 +191,19 @@ class ResidualCouplingBlock(nn.Module):
         self.flows = nn.ModuleList(
             ResidualCouplingLayer(channels, hidden, kernel_size, dilation_rate, n_layers, gin_channels)
             for _ in range(n_flows))
+        # channel reversal as a constant-index gather (torch.flip -> negative-step Slice breaks onnx2tf)
+        self.register_buffer("rev_idx", torch.arange(channels - 1, -1, -1), persistent=False)
+
+    def _flip(self, x):
+        return torch.index_select(x, 1, self.rev_idx)
 
     def forward(self, x, x_mask, g=None, reverse=False):
         flows = self.flows if not reverse else reversed(self.flows)
         for f in flows:
             if not reverse:
-                x = torch.flip(f(x, x_mask, g=g), [1])
+                x = self._flip(f(x, x_mask, g=g))
             else:
-                x = f(torch.flip(x, [1]), x_mask, g=g, reverse=True)
+                x = f(self._flip(x), x_mask, g=g, reverse=True)
         return x
 
 
