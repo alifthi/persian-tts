@@ -43,7 +43,7 @@ def _process(job):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--sources", nargs="+", default=["mana_tts", "gptinformal", "parsigoo", "persian_speech", "fleurs"],
+    ap.add_argument("--sources", nargs="+", default=["mana_tts", "gptinformal", "persian_speech", "fleurs"],
                     choices=list(SOURCES))
     ap.add_argument("--out", default="data/processed")
     ap.add_argument("--sr", type=int, default=22050)
@@ -58,6 +58,9 @@ def main():
     ap.add_argument("--limit", type=int, default=0, help="max utterances per source (debug)")
     ap.add_argument("--common-voice-path", default=None)
     ap.add_argument("--allow-noncommercial", action="store_true")
+    ap.add_argument("--exclude-speakers", nargs="*", default=[], help="speaker names or prefixes to drop")
+    ap.add_argument("--rebuild-only", action="store_true",
+                    help="re-filter/re-split existing manifests (no download/decoding); keeps only --sources")
     ap.add_argument("--seed", type=int, default=1234)
     args = ap.parse_args()
 
@@ -65,7 +68,19 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     records, rejected = [], Counter()
 
-    for name in args.sources:
+    if args.rebuild_only:
+        for split in ("train", "val"):
+            p = out / f"{split}.jsonl"
+            if p.exists():
+                for l in p.read_text(encoding="utf-8").splitlines():
+                    if l.strip():
+                        r = json.loads(l)
+                        r["text"] = normalize(r["text"])
+                        records.append(r)
+        args.sources = [n for n in args.sources if SOURCES[n].commercial_ok or args.allow_noncommercial]
+        records = [r for r in records if r["source"] in args.sources]
+
+    for name in ([] if args.rebuild_only else args.sources):
         src = SOURCES[name]
         if not src.commercial_ok and not args.allow_noncommercial:
             print(f"skip {name}: license {src.license} is not commercial-friendly")
@@ -113,6 +128,13 @@ def main():
     # post-filters on processed (trimmed) audio
     kept = []
     for r in records:
+        if any(r["speaker"] == x or r["speaker"].startswith(x) for x in args.exclude_speakers):
+            rejected["excluded_speaker"] += 1
+            continue
+        if any(c in unknown_chars(r["text"]) for c in r["text"].lower()) and \
+                sum(c in unknown_chars(r["text"]) for c in r["text"].lower()) / len(r["text"]) > args.max_unknown_ratio:
+            rejected["unknown_chars"] += 1
+            continue
         if not (args.min_dur <= r["duration"] <= args.max_dur):
             rejected["duration"] += 1
             continue
@@ -126,12 +148,13 @@ def main():
 
     # merge with existing manifest from previous runs of other sources
     old = []
-    for split in ("train", "val"):
+    for split in ([] if args.rebuild_only else ("train", "val")):
         p = out / f"{split}.jsonl"
         if p.exists():
             old += [json.loads(l) for l in p.read_text(encoding="utf-8").splitlines() if l.strip()]
     new_sources = {r["source"] for r in kept} | set(args.sources)
-    kept = [r for r in old if r["source"] not in new_sources] + kept
+    kept = [r for r in old if r["source"] not in new_sources
+            and (SOURCES[r["source"]].commercial_ok or args.allow_noncommercial)] + kept
 
     by_spk = defaultdict(list)
     for r in kept:
