@@ -275,8 +275,10 @@ class Trainer:
                     self.writer.add_scalar("perf/steps_per_sec", t.log_every / dt, self.step)
                     if not all(math.isfinite(v) for v in msg.values()):
                         print("WARNING: non-finite loss detected", msg)
+                    mem = torch.cuda.max_memory_allocated() / 2**30 if self.device.type == "cuda" else 0.0
+                    self.writer.add_scalar("perf/max_mem_gb", mem, self.step)
                     print(f"step {self.step} ep {self.epoch} " + " ".join(f"{k}={v:.3f}" for k, v in msg.items())
-                          + f" | {t.log_every / dt:.2f} it/s", flush=True)
+                          + f" | {t.log_every / dt:.2f} it/s | mem {mem:.2f}GB", flush=True)
                     acc, t0 = {}, time.time()
                 if self.step % t.eval_every == 0:
                     if self.is_main:

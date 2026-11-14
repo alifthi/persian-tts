@@ -7,7 +7,10 @@ Overrides:   python scripts/train.py -c configs/base.yaml train.learning_rate=1e
 Training resumes automatically from <out_dir>/<name>/checkpoints/latest.pt (use --no-resume to start fresh).
 """
 import argparse
+import os
 import sys
+
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")  # less fragmentation on small GPUs
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))

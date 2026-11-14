@@ -1,0 +1,25 @@
+# Fine-tune on a 4 GB laptop GPU (RTX 3050). Measured: ~3 GB peak at 8k frames; 6k leaves headroom.
+# ~1.75 h per epoch over 112 h of data; intelligible speech expected after ~20-30k steps.
+name: persian-vits-laptop
+out_dir: runs
+model: {}
+data:
+  root: data/processed
+  train_manifest: data/processed/train.jsonl
+  val_manifest: data/processed/val.jsonl
+  speakers: data/processed/speakers.json
+  max_frames_per_batch: 6000
+  max_batch_size: 12
+  num_workers: 6
+train:
+  init_from: data/pretrained/persian_init.pt
+  freeze_decoder_steps: 5000
+  max_steps: 150000
+  learning_rate: 2.0e-4
+  learning_rate_d: 1.0e-4
+  warmup_steps: 1000
+  precision: bf16
+  log_every: 100
+  eval_every: 2500
+  save_every: 2500
+  keep_last: 3
