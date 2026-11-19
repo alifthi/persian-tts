@@ -58,7 +58,8 @@ def main():
     onnx.save(m, str(static_onnx))
 
     # realistic calibration inputs for onnx2tf's internal shape/accuracy checks (valid speaker id, real text)
-    from persian_tts.text import text_to_ids
+    from persian_tts.text import get_frontend
+    _, text_to_ids = get_frontend(cfg.get("text_frontend", "chars"))
     calib = text_to_ids("این یک جمله آزمایشی برای تبدیل مدل است.")
     np_dir = out / "calib"
     np_dir.mkdir()

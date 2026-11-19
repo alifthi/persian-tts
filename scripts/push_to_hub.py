@@ -21,6 +21,11 @@ from persian_tts.data.sources import SOURCES  # noqa: E402
 
 COMMERCIAL_LICENSES = {"CC0-1.0", "MIT", "CC-BY-4.0", "Apache-2.0"}
 
+TEXT_INPUT = {
+    "chars": "normalized Persian characters (no phonemizer, no GPL dependency)",
+    "phonemes": "espeak-ng `fa` IPA phonemes, Piper phoneme table (espeak-ng is GPL-3.0 and needed at inference)",
+}
+
 CARD = """---
 language: [fa]
 license: cc-by-4.0
@@ -40,14 +45,15 @@ End-to-end VITS model for Persian. It is fine-tuned from the Piper `_base_model`
 | Speakers | {n_spk} (`config.json` / `speakers.json`) |
 | Training steps | {step} |
 | Formats | PyTorch (`generator.safetensors`), ONNX (`onnx/model.onnx`), TensorFlow SavedModel + TFLite (`tf/`) |
-| Text input | normalized Persian characters (no phonemizer, no GPL dependency) |
+| Text input | {text_input} |
 
 ## Usage (ONNX)
 
 ```python
 import numpy as np, onnxruntime as ort, soundfile as sf
-from persian_tts.text import text_to_ids   # from the training repository
-ids = np.array([text_to_ids("سلام، به دنیای گفتار فارسی خوش آمدید.")], dtype=np.int64)
+from persian_tts.text import get_frontend   # from the training repository
+_, encode = get_frontend("{frontend}")
+ids = np.array([encode("سلام، به دنیای گفتار فارسی خوش آمدید.")], dtype=np.int64)
 sess = ort.InferenceSession("onnx/model.onnx")
 audio = sess.run(None, {{"input": ids, "input_lengths": np.array([ids.shape[1]]),
                         "scales": np.array([0.667, 1.0, 0.8], dtype=np.float32), "sid": np.array([0])}})[0]
@@ -115,9 +121,10 @@ def main():
     for src, h in stats["hours_per_source"].items():
         s = SOURCES[src]
         rows.append(f"| [{src}]({s.url}) | {s.license} | {h} |")
+    fe = ck["config"].get("data", {}).get("text_frontend", "chars")
     (out / "README.md").write_text(CARD.format(
         name=a.name, sr=ck["config"]["audio"]["sample_rate"], n_spk=len(ck["speakers"]), step=ck["step"],
-        data_table="\n".join(rows)), encoding="utf-8")
+        frontend=fe, text_input=TEXT_INPUT[fe], data_table="\n".join(rows)), encoding="utf-8")
     print("release folder ready:", out)
     if a.dry_run:
         return

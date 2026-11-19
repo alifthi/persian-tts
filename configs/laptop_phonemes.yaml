@@ -1,0 +1,27 @@
+# Fine-tune on a 4 GB laptop GPU (RTX 3050) with the espeak-ng phoneme frontend (recommended over laptop.yaml).
+# Same memory profile as laptop.yaml (~3 GB peak at 6k frames); ~1.75 h per epoch over 112 h of data.
+name: persian-vits-laptop-phonemes
+out_dir: runs
+model: {}
+data:
+  root: data/processed
+  train_manifest: data/processed/train.jsonl
+  val_manifest: data/processed/val.jsonl
+  speakers: data/processed/speakers.json
+  text_frontend: phonemes  # espeak-ng IPA: resolves the short vowels Persian script omits
+  max_frames_per_batch: 6000
+  max_batch_size: 12
+  eval_batch_size: 1
+  num_workers: 6
+train:
+  init_from: data/pretrained/persian_init_phonemes.pt  # convert_piper_checkpoint.py --frontend phonemes
+  freeze_decoder_steps: 2000  # text embeddings are pretrained now, so less adaptation time is needed
+  max_steps: 150000
+  learning_rate: 2.0e-4
+  learning_rate_d: 1.0e-4
+  warmup_steps: 1000
+  precision: bf16
+  log_every: 100
+  eval_every: 2500
+  save_every: 2500
+  keep_last: 3

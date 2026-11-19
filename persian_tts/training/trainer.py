@@ -18,7 +18,7 @@ from ..data.dataset import BucketBatchSampler, TTSDataset, collate
 from ..data.mel import mel_spectrogram, spec_to_mel
 from ..models import MultiPeriodDiscriminator, SynthesizerTrn
 from ..models import commons
-from ..text import SYMBOLS
+from ..text import get_frontend
 from .losses import discriminator_loss, feature_loss, generator_loss
 
 
@@ -67,8 +67,9 @@ class Trainer:
         self.speakers = json.loads(Path(d.speakers).read_text(encoding="utf-8"))
         if self.is_main:
             (self.run_dir / "speakers.json").write_text(json.dumps(self.speakers, ensure_ascii=False, indent=1))
-        self.train_ds = TTSDataset(d.train_manifest, d.root, self.speakers, a, d.add_blank)
-        self.val_ds = TTSDataset(d.val_manifest, d.root, self.speakers, a, d.add_blank)
+        self.symbols, _ = get_frontend(d.text_frontend)
+        self.train_ds = TTSDataset(d.train_manifest, d.root, self.speakers, a, d.add_blank, frontend=d.text_frontend)
+        self.val_ds = TTSDataset(d.val_manifest, d.root, self.speakers, a, d.add_blank, frontend=d.text_frontend)
         self.sampler = BucketBatchSampler(self.train_ds.lengths, d.max_frames_per_batch, d.max_batch_size,
                                           self.world, self.rank, shuffle=True, seed=cfg.train.seed)
         self.train_dl = DataLoader(self.train_ds, batch_sampler=self.sampler, collate_fn=collate,
@@ -76,7 +77,7 @@ class Trainer:
                                    persistent_workers=d.num_workers > 0, prefetch_factor=4 if d.num_workers else None)
 
         seg_frames = cfg.train.segment_size // a.hop_length
-        self.net_g = SynthesizerTrn(len(SYMBOLS), a.n_fft // 2 + 1, seg_frames, len(self.speakers), cfg.model).to(self.device)
+        self.net_g = SynthesizerTrn(len(self.symbols), a.n_fft // 2 + 1, seg_frames, len(self.speakers), cfg.model).to(self.device)
         self.net_d = MultiPeriodDiscriminator().to(self.device)
         t = cfg.train
         dec_ids = {id(p) for p in self.net_g.dec.parameters()}
@@ -120,6 +121,9 @@ class Trainer:
 
     def _warm_start(self, path):
         ck = torch.load(path, map_location="cpu", weights_only=False)
+        if ck.get("symbols") is not None and list(ck["symbols"]) != list(self.symbols):
+            raise ValueError(f"{path} was built for a different text frontend than data.text_frontend="
+                             f"{self.cfg.data.text_frontend!r}; rebuild it with convert_piper_checkpoint.py --frontend")
         for name, net, key in (("G", self.net_g, "ema" if "ema" in ck else "net_g"), ("D", self.net_d, "net_d")):
             sd = ck.get(key)
             if sd is None:
@@ -157,7 +161,7 @@ class Trainer:
                   optim_d=self.optim_d.state_dict(), sched_g=self.sched_g.state_dict(),
                   sched_d=self.sched_d.state_dict(), scaler=self.scaler.state_dict(),
                   step=self.step, epoch=self.epoch, best_val=self.best_val, config=to_dict(self.cfg),
-                  speakers=self.speakers, symbols=SYMBOLS)
+                  speakers=self.speakers, symbols=self.symbols)
         name = tag or f"step_{self.step:08d}.pt"
         tmp = self.ckpt_dir / (name + ".tmp")
         torch.save(ck, tmp)
@@ -225,34 +229,47 @@ class Trainer:
     def evaluate(self, n_audio=4):
         """Teacher-forced mel L1 + duration loss on the full val set (EMA weights), and TTS audio samples."""
         g = self.ema.shadow
-        a = self.cfg.audio
-        dl = DataLoader(self.val_ds, batch_size=8, collate_fn=collate, num_workers=2)
+        if self.device.type == "cuda":
+            torch.cuda.empty_cache()  # return cached training blocks before full-length decoding
+        dl = DataLoader(self.val_ds, batch_size=self.cfg.data.eval_batch_size, collate_fn=collate, num_workers=2)
         tot_mel, tot_dur, n = 0.0, 0.0, 0
         for i, batch in enumerate(dl):
-            b = {k: v.to(self.device) for k, v in batch.items()}
-            sid = b["sid"]
-            gg = g._g(sid)
-            x, m_p, logs_p, x_mask = g.enc_p(b["text"], b["text_lengths"])
-            z, _, _, y_mask = g.enc_q(b["spec"], b["spec_lengths"], g=gg)
-            y_hat = g.dec(z * y_mask, g=gg)
-            mel = self._mel(b["spec"], False)
-            mel_hat = self._mel(y_hat.squeeze(1).unsqueeze(1), True)[..., : mel.shape[-1]]
-            m = y_mask[..., : mel_hat.shape[-1]]
-            tot_mel += (torch.abs(mel[..., : mel_hat.shape[-1]] - mel_hat) * m).sum().item() / (m.sum().item() * a.n_mels)
-            # duration error: predicted total length vs. ground truth frames
-            logw = g.dp(x, x_mask, g=gg)
-            pred_len = torch.ceil(torch.exp(logw) * x_mask).sum([1, 2])
-            tot_dur += (torch.abs(pred_len - b["spec_lengths"]) / b["spec_lengths"]).mean().item()
-            n += 1
-            if i == 0 and self.is_main:
-                for k in range(min(n_audio, b["text"].shape[0])):
-                    tl = b["text_lengths"][k: k + 1]
-                    o, yl = g.infer(b["text"][k: k + 1, : tl.item()], tl, sid=sid[k: k + 1] if sid is not None else None)
-                    self.writer.add_audio(f"tts/{k}", o[0, 0].float().cpu(), self.step, a.sample_rate)
-                    if self.step == 0 or not getattr(self, "_logged_gt", False):
-                        self.writer.add_audio(f"gt/{k}", b["wav"][k, 0, : b["wav_lengths"][k]].cpu(), self.step, a.sample_rate)
-                self._logged_gt = True
+            try:
+                res = self._eval_batch(g, batch, i, n_audio)
+            except torch.OutOfMemoryError:  # a long val utterance must not kill a multi-day run
+                if self.device.type == "cuda":
+                    torch.cuda.empty_cache()
+                print(f"[eval] skipped val batch {i}: out of memory")
+                continue
+            tot_mel, tot_dur, n = tot_mel + res[0], tot_dur + res[1], n + 1
         return dict(val_mel_l1=tot_mel / max(n, 1), val_len_err=tot_dur / max(n, 1))
+
+    def _eval_batch(self, g, batch, i, n_audio):
+        """-> (mel L1, relative length error) for one val batch; logs TTS audio for the first one."""
+        a = self.cfg.audio
+        b = {k: v.to(self.device) for k, v in batch.items()}
+        sid = b["sid"]
+        gg = g._g(sid)
+        x, m_p, logs_p, x_mask = g.enc_p(b["text"], b["text_lengths"])
+        z, _, _, y_mask = g.enc_q(b["spec"], b["spec_lengths"], g=gg)
+        y_hat = g.dec(z * y_mask, g=gg)
+        mel = self._mel(b["spec"], False)
+        mel_hat = self._mel(y_hat.squeeze(1).unsqueeze(1), True)[..., : mel.shape[-1]]
+        m = y_mask[..., : mel_hat.shape[-1]]
+        mel_l1 = (torch.abs(mel[..., : mel_hat.shape[-1]] - mel_hat) * m).sum().item() / (m.sum().item() * a.n_mels)
+        # duration error: predicted total length vs. ground truth frames
+        logw = g.dp(x, x_mask, g=gg)
+        pred_len = torch.ceil(torch.exp(logw) * x_mask).sum([1, 2])
+        len_err = (torch.abs(pred_len - b["spec_lengths"]) / b["spec_lengths"]).mean().item()
+        if i == 0 and self.is_main:
+            for k in range(min(n_audio, b["text"].shape[0])):
+                tl = b["text_lengths"][k: k + 1]
+                o, yl = g.infer(b["text"][k: k + 1, : tl.item()], tl, sid=sid[k: k + 1] if sid is not None else None)
+                self.writer.add_audio(f"tts/{k}", o[0, 0].float().cpu(), self.step, a.sample_rate)
+                if self.step == 0 or not getattr(self, "_logged_gt", False):
+                    self.writer.add_audio(f"gt/{k}", b["wav"][k, 0, : b["wav_lengths"][k]].cpu(), self.step, a.sample_rate)
+            self._logged_gt = True
+        return mel_l1, len_err
 
     def fit(self):
         t = self.cfg.train

@@ -29,6 +29,12 @@ The character embeddings are initialized from the pretrained model's IPA phoneme
 | FLEURS fa_ir | CC-BY-4.0 | read speech, attribution required |
 | Common Voice fa | CC0 | manual download from Mozilla Data Collective (`--common-voice-path`) |
 
+## Text frontend
+`data.text_frontend: phonemes` (recommended) converts text to IPA with espeak-ng's `fa` voice and uses
+Piper's phoneme table, so the pretrained embeddings load exactly. Persian script leaves out short vowels;
+the character frontend (`chars`) has to guess them, which made speech much less intelligible. espeak-ng is
+GPL-3.0 and has to be present at inference time too (`dnf install espeak-ng`), just like with Piper.
+
 ## Workflow
 ```bash
 python -m venv .venv --system-site-packages && .venv/bin/pip install -e ".[dev]"
@@ -40,10 +46,12 @@ python scripts/prepare_data.py --out data/processed --workers 16
 python scripts/convert_piper_checkpoint.py \
   --ckpt data/pretrained/piper_base/_base_model/base_model.ckpt \
   --piper-config data/pretrained/piper_base/_base_model/config.json \
-  --speakers data/processed/speakers.json --out data/pretrained/persian_init.pt
+  --speakers data/processed/speakers.json --frontend phonemes --out data/pretrained/persian_init_phonemes.pt
 
 # 3. fine-tune (auto-resumes; SIGTERM-safe)
-torchrun --nproc_per_node=4 scripts/train.py -c configs/base.yaml
+torchrun --nproc_per_node=4 scripts/train.py -c configs/base.yaml data.text_frontend=phonemes \
+  train.init_from=data/pretrained/persian_init_phonemes.pt
+python scripts/train.py -c configs/laptop_phonemes.yaml      # 4 GB laptop GPU
 tensorboard --logdir runs
 
 # 4. export + verify
@@ -52,7 +60,7 @@ python scripts/export_onnx.py --ckpt .../best.pt --out exports/onnx_tf --portabl
 .venv-tf/bin/python scripts/export_tf.py --onnx exports/onnx_tf/model.onnx --out exports/tf   # SavedModel + TFLite
 
 # 5. listen
-python scripts/synthesize.py --onnx exports/onnx/model.onnx --text "سلام، حال شما چطور است؟" --out hi.wav
+python scripts/synthesize.py --onnx exports/onnx/model.onnx --text "سلام، حال شما چطور است؟" --out hi.wav  # --speaker mana (default)
 
 # 6. publish (license-gated; --dry-run first)
 python scripts/push_to_hub.py --ckpt .../best.pt --onnx-dir exports/onnx --tf-dir exports/tf \

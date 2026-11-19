@@ -45,9 +45,11 @@ class DataConfig:
     train_manifest: str = "data/processed/train.jsonl"
     val_manifest: str = "data/processed/val.jsonl"
     speakers: str = "data/processed/speakers.json"
-    add_blank: bool = True
+    add_blank: bool = True  # chars frontend only (phonemes always use Piper's pad-interleaved layout)
+    text_frontend: str = "chars"  # chars | phonemes (espeak-ng IPA, Piper phoneme table; much better quality)
     max_frames_per_batch: int = 20000
     max_batch_size: int = 32
+    eval_batch_size: int = 8  # eval decodes full utterances (no segment slicing); keep small on small GPUs
     num_workers: int = 8
 
 

@@ -3,11 +3,11 @@ __pycache__/
 *.egg-info/
 .venv/
 .pytest_cache/
-# data & artifacts (never commit)
-data/
-runs/
-checkpoints/
-exports/
+# data & artifacts (never commit) — anchored, so persian_tts/data/ stays tracked
+/data/
+/runs/
+/checkpoints/
+/exports/
 *.wav
 *.onnx
 *.tflite

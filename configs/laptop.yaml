@@ -10,6 +10,7 @@ data:
   speakers: data/processed/speakers.json
   max_frames_per_batch: 6000
   max_batch_size: 12
+  eval_batch_size: 1
   num_workers: 6
 train:
   init_from: data/pretrained/persian_init.pt

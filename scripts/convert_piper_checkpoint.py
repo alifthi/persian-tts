@@ -9,7 +9,8 @@ checkpoint for Persian fine-tuning.
 
 * generator + MPD discriminator weights are loaded 1:1 (legacy weight_norm -> parametrizations,
   flows re-indexed to drop Flip modules);
-* character embeddings are initialized from the mean of mapped IPA phoneme embeddings;
+* --frontend phonemes (recommended): the phoneme embedding table is copied 1:1 (same espeak-ng IPA ids);
+  --frontend chars: character embeddings are the mean of mapped IPA phoneme embeddings;
 * each Persian speaker embedding is initialized from a distinct pretrained speaker;
 * the stochastic duration predictor and MRD discriminator are not used (deterministic DP is trained).
 """
@@ -24,7 +25,7 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from persian_tts.config import ModelConfig  # noqa: E402
 from persian_tts.models import MultiPeriodDiscriminator, SynthesizerTrn  # noqa: E402
-from persian_tts.text import SYMBOLS  # noqa: E402
+from persian_tts.text import get_frontend  # noqa: E402
 from persian_tts.text.ipa_init import CHAR_TO_IPA  # noqa: E402
 
 
@@ -55,6 +56,7 @@ def main():
     ap.add_argument("--speakers", required=True)
     ap.add_argument("--out", default="data/pretrained/persian_init.pt")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--frontend", choices=["chars", "phonemes"], default="phonemes")
     args = ap.parse_args()
 
     pcfg = json.loads(Path(args.piper_config).read_text())
@@ -70,6 +72,7 @@ def main():
         assert getattr(mcfg, k) == hp[k], f"config mismatch {k}: {getattr(mcfg, k)} vs {hp[k]}"
     assert str(mcfg.resblock) == str(hp["resblock"])
 
+    SYMBOLS, _ = get_frontend(args.frontend)
     net_g = SynthesizerTrn(len(SYMBOLS), 513, 32, len(speakers), mcfg)
     net_d = MultiPeriodDiscriminator(use_spectral_norm=hp["use_spectral_norm"])
     g_sd, d_sd = net_g.state_dict(), net_d.state_dict()
@@ -96,6 +99,12 @@ def main():
     emb = g_sd["enc_p.emb.weight"].clone()
     unmapped = []
     for i, sym in enumerate(SYMBOLS):
+        if args.frontend == "phonemes":
+            if sym.startswith("<unused") or pid.get(sym, [None])[0] != i:
+                unmapped.append(sym) if not sym.startswith("<unused") else None
+                continue
+            emb[i] = src_emb[i]
+            continue
         phs = [p for p in CHAR_TO_IPA.get(sym, []) if p in pid]
         if not phs:
             unmapped.append(sym)
@@ -119,7 +128,7 @@ def main():
     if unmapped:
         print("symbols without IPA init (random):", unmapped)
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
-    torch.save(dict(net_g=net_g.state_dict(), net_d=net_d.state_dict(), symbols=SYMBOLS, speakers=speakers,
+    torch.save(dict(net_g=net_g.state_dict(), net_d=net_d.state_dict(), symbols=SYMBOLS, speakers=speakers, text_frontend=args.frontend,
                     source=dict(repo="rhasspy/piper-checkpoints", path="_base_model/base_model.ckpt",
                                 data="LibriTTS-R (CC-BY-4.0)", code_license="MIT",
                                 speaker_init=dict(zip(speakers, picks)))), args.out)

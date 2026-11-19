@@ -16,8 +16,18 @@ def text_to_ids(text: str, add_blank: bool = True, already_normalized: bool = Fa
     return ids
 
 
+def get_frontend(name: str = "chars"):
+    """-> (symbols, encode(text, already_normalized=False) -> ids). 'phonemes' needs espeak-ng."""
+    if name == "chars":
+        return SYMBOLS, lambda t, already_normalized=False: text_to_ids(t, True, already_normalized)
+    if name == "phonemes":
+        from .phonemes import PHONEME_SYMBOLS, phonemize, phonemes_to_ids
+        return PHONEME_SYMBOLS, lambda t, already_normalized=False: phonemes_to_ids(phonemize(t, already_normalized))
+    raise ValueError(f"unknown text frontend {name!r} (chars | phonemes)")
+
+
 def unknown_chars(text: str) -> set:
     return {c for c in text.lower() if c not in SYMBOL_TO_ID}
 
 
-__all__ = ["normalize", "text_to_ids", "unknown_chars", "SYMBOLS", "PAD_ID", "BLANK_ID"]
+__all__ = ["normalize", "text_to_ids", "unknown_chars", "get_frontend", "SYMBOLS", "PAD_ID", "BLANK_ID"]

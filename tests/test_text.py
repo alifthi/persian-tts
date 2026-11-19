@@ -26,3 +26,15 @@ def test_zwnj_and_spaces():
 def test_text_to_ids_blank():
     ids = text_to_ids("سلام")
     assert len(ids) == 9 and ids[0] == BLANK_ID and ids[-1] == BLANK_ID
+
+
+def test_phoneme_frontend():
+    import pytest
+    pytest.importorskip("ctypes")
+    from persian_tts.text import get_frontend
+    from persian_tts.text.phonemes import BOS_ID, EOS_ID, PAD_ID, phonemize, unknown_phonemes
+    p = phonemize("سلام، حال شما چطور است؟")
+    assert p.startswith("salˈɑm,") and p.endswith("?") and not unknown_phonemes(p)
+    symbols, encode = get_frontend("phonemes")
+    ids = encode("کتاب")
+    assert len(symbols) == 256 and ids[0] == BOS_ID and ids[-1] == EOS_ID and ids[1::2] == [PAD_ID] * (len(ids) // 2)

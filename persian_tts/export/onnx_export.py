@@ -7,7 +7,7 @@ import torch
 
 from ..config import ModelConfig, AudioConfig
 from ..models import SynthesizerTrn
-from ..text import SYMBOLS, text_to_ids
+from ..text import get_frontend
 from ..text.symbols import BLANK_ID, PAD_ID
 
 
@@ -23,13 +23,19 @@ class OnnxWrapper(torch.nn.Module):
         return audio
 
 
+def checkpoint_frontend(ck) -> str:
+    return ck["config"].get("data", {}).get("text_frontend", "chars")
+
+
 def load_generator(ckpt_path: str, use_ema: bool = True):
+    """-> (generator, checkpoint dict, AudioConfig). ck["encode"] tokenizes text for this checkpoint."""
     ck = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     cfg = ck["config"]
     mcfg = ModelConfig(**cfg["model"])
     acfg = AudioConfig(**cfg["audio"])
-    assert ck["symbols"] == SYMBOLS, "checkpoint symbol table differs from code"
-    g = SynthesizerTrn(len(SYMBOLS), acfg.n_fft // 2 + 1, 32, len(ck["speakers"]), mcfg)
+    symbols, ck["encode"] = get_frontend(checkpoint_frontend(ck))
+    assert list(ck["symbols"]) == list(symbols), "checkpoint symbol table differs from code"
+    g = SynthesizerTrn(len(symbols), acfg.n_fft // 2 + 1, 32, len(ck["speakers"]), mcfg)
     g.load_state_dict(ck["ema"] if use_ema and "ema" in ck else ck["net_g"])
     g.eval()
     g.remove_weight_norm()
@@ -46,7 +52,8 @@ def export(ckpt_path: str, out_dir: str, opset: int = 17, verify: bool = True, p
     g.static_max_frames = max_frames if portable else None
     model = OnnxWrapper(g, acfg.hop_length).eval()
 
-    ids = torch.LongTensor([text_to_ids("سلام، این یک آزمایش است.")])
+    encode = ck["encode"]
+    ids = torch.LongTensor([encode("سلام، این یک آزمایش است.")])
     dummy = (ids, torch.LongTensor([ids.shape[1]]), torch.FloatTensor([0.667, 1.0, 0.8]), torch.LongTensor([0]))
     onnx_path = out / "model.onnx"
     outputs = ["output", "output_lengths"] if portable else ["output"]
@@ -64,24 +71,30 @@ def export(ckpt_path: str, out_dir: str, opset: int = 17, verify: bool = True, p
         pass
 
     # Piper-style runtime config: everything needed to tokenize and run the model
+    symbols = list(ck["symbols"])
+    if checkpoint_frontend(ck) == "phonemes":  # Piper's own convention: espeak-ng voice + phoneme_id_map
+        tok = dict(phoneme_type="espeak", espeak=dict(voice="fa"), text_frontend="phonemes",
+                   phoneme_id_map={s: [i] for i, s in enumerate(symbols) if not s.startswith("<unused")})
+    else:
+        tok = dict(phoneme_type="text", text_frontend="chars", symbols=symbols, pad_id=PAD_ID, blank_id=BLANK_ID,
+                   add_blank=True)
     (out / "model.onnx.json").write_text(json.dumps(dict(
-        audio=dict(sample_rate=acfg.sample_rate), num_symbols=len(SYMBOLS), num_speakers=len(ck["speakers"]),
-        speaker_id_map={s: i for i, s in enumerate(ck["speakers"])},
-        symbols=SYMBOLS, pad_id=PAD_ID, blank_id=BLANK_ID, add_blank=True, phoneme_type="text",
+        audio=dict(sample_rate=acfg.sample_rate), num_symbols=len(symbols), num_speakers=len(ck["speakers"]),
+        speaker_id_map={s: i for i, s in enumerate(ck["speakers"])}, **tok,
         language=dict(code="fa_IR"), inference=dict(noise_scale=0.667, length_scale=1.0, noise_w=0.8),
         static_output=dict(max_samples=max_frames * acfg.hop_length) if portable else None,
     ), ensure_ascii=False, indent=1), encoding="utf-8")
 
     if verify:
-        verify_onnx(onnx_path, g)
+        verify_onnx(onnx_path, g, encode)
     return onnx_path
 
 
-def verify_onnx(onnx_path, g, atol=1e-3):
+def verify_onnx(onnx_path, g, encode, atol=1e-3):
     import onnxruntime as ort
     sess = ort.InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])
     for text in ["سلام", "امروز هوا خیلی خوب است و ما ساعت ۵ به پارک می‌رویم."]:
-        ids = torch.LongTensor([text_to_ids(text)])
+        ids = torch.LongTensor([encode(text)])
         scales = torch.FloatTensor([0.0, 1.0, 0.8])  # noise off -> exact graph comparison
         sid = torch.LongTensor([0])
         with torch.no_grad():
