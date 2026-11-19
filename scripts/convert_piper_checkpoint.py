@@ -100,8 +100,11 @@ def main():
     unmapped = []
     for i, sym in enumerate(SYMBOLS):
         if args.frontend == "phonemes":
-            if sym.startswith("<unused") or pid.get(sym, [None])[0] != i:
-                unmapped.append(sym) if not sym.startswith("<unused") else None
+            # ids are Piper's own; copy the row 1:1 whenever this symbol really sits at index i there
+            if sym.startswith("<unused"):
+                continue
+            if pid.get(sym, [None])[0] != i:
+                unmapped.append(sym)
                 continue
             emb[i] = src_emb[i]
             continue

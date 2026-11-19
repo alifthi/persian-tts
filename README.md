@@ -62,6 +62,9 @@ python scripts/export_onnx.py --ckpt .../best.pt --out exports/onnx_tf --portabl
 # 5. listen
 python scripts/synthesize.py --onnx exports/onnx/model.onnx --text "سلام، حال شما چطور است؟" --out hi.wav  # --speaker mana (default)
 
+# 5b. objective intelligibility (synthesize val text -> Whisper -> CER/WER; compares frontends)
+python scripts/eval_asr.py --onnx chars=exports/onnx_chars/model.onnx phonemes=exports/onnx_phonemes/model.onnx --n 24
+
 # 6. publish (license-gated; --dry-run first)
 python scripts/push_to_hub.py --ckpt .../best.pt --onnx-dir exports/onnx --tf-dir exports/tf \
   --data-stats data/processed/stats.json --repo-id <org>/persian-vits --dry-run
