@@ -32,8 +32,19 @@ The character embeddings are initialized from the pretrained model's IPA phoneme
 ## Text frontend
 `data.text_frontend: phonemes` (recommended) converts text to IPA with espeak-ng's `fa` voice and uses
 Piper's phoneme table, so the pretrained embeddings load exactly. Persian script leaves out short vowels;
-the character frontend (`chars`) has to guess them, which made speech much less intelligible. espeak-ng is
-GPL-3.0 and has to be present at inference time too (`dnf install espeak-ng`), just like with Piper.
+the character frontend (`chars`) has to guess them. espeak-ng is GPL-3.0 and has to be present at
+inference time too (`dnf install espeak-ng`), just like with Piper.
+
+Measured with `scripts/eval_asr.py` (24 val sentences, speaker `mana`, `openai/whisper-small`; the
+ground-truth row is the ASR model's own error floor on this data, so only the gaps are meaningful):
+
+| model | steps | CER | WER |
+| --- | --- | --- | --- |
+| ground-truth recordings | — | 0.179 | 0.573 |
+| phonemes | 105k | **0.270** | **0.744** |
+| chars | 150k | 0.362 | 0.764 |
+
+The phoneme model is ~25 % better on CER with 30 % fewer training steps, which is why it is the default.
 
 ## Workflow
 ```bash
