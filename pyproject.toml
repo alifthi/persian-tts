@@ -26,6 +26,9 @@ dependencies = [
 
 [project.optional-dependencies]
 export = ["onnx>=1.16", "onnxruntime>=1.18", "onnxsim", "onnx2tf", "tensorflow>=2.16", "tf_keras", "onnx_graphsurgeon", "sng4onnx", "psutil"]
+# Orpheus-3B line: transformers LLM + SNAC neural codec. bitsandbytes is only
+# needed for the 4-bit config and has no CPU kernels, hence the marker.
+orpheus = ["transformers>=4.45", "peft>=0.11", "snac>=1.2", "accelerate>=0.30", "bitsandbytes>=0.43; platform_machine=='x86_64'"]
 dev = ["pytest"]
 
 [tool.setuptools.packages.find]

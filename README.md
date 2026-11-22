@@ -96,5 +96,90 @@ and returns a fixed 30 s buffer plus `output_lengths`, the number of valid sampl
 - AdamW with warmup and exponential decay, bf16 autocast, gradient clipping, and EMA weights (used for eval and export).
 - Batches are bucketed by frame count. DDP via torchrun. Checkpoints are written atomically, the best one is chosen by validation mel L1, and audio samples go to TensorBoard.
 
+## Orpheus-3B: a second model line (transformers + neural codec)
+
+The VITS model above has two ceilings that no amount of further training removes:
+`use_sdp: false` gives flat, averaged prosody (the usual source of "robotic"), and
+`upsample_initial_channel: 256` is Piper's *medium* vocoder tier (the usual source of
+"buzzy/metallic"). Both are architectural.
+
+`persian_tts/orpheus/` is a separate stack that does not have them. It fine-tunes
+[Orpheus-3B](https://huggingface.co/unsloth/orpheus-3b-0.1-pretrained) — a
+`LlamaForCausalLM` under 🤗 transformers — to autoregressively predict discrete
+[SNAC](https://huggingface.co/hubertsiuzdak/snac_24khz) audio codes from text, which the
+codec decodes to 24 kHz waveform. Prosody comes from a 3B language model rather than a
+duration predictor, and waveform quality from SNAC rather than a 256-channel HiFi-GAN.
+
+**Why this model and not a better-sounding one.** Orpheus is the strongest TTS model that
+clears this project's commercial-licence gate: the base is Apache-2.0 and SNAC is MIT.
+F5-TTS, MaskGCT, OuteTTS, XTTS-v2 and openaudio-s1 all score higher on MOS and are all
+CC-BY-NC or more restrictive; they were rejected on licence, not quality, for the same
+reason ParsiGoo was excluded from the corpus.
+
+### How the audio is tokenized
+
+SNAC is a multi-scale codec: per frame it emits 1 coarse + 2 mid + 4 fine codes at three
+different rates. Orpheus flattens those 7 codes into 7 strictly-banded token ids
+(slot *i* owns vocabulary band `128266 + i*4096`), so a plain causal LM models audio as
+text. The interleave is causal in time, not grouped by level. Getting it wrong yields a
+model that trains to a perfectly normal loss and decodes to noise, so the mapping lives in
+one module with exact-inverse tests, and was additionally verified to reproduce SNAC's own
+codes bit-for-bit on real corpus audio.
+
+Measured on this corpus: **11.77 SNAC frames/s = 82.4 tokens/s** of speech (the published
+12.5 frames/s is nominal; the encoder's strides do not divide 24 kHz exactly). A 20-second
+utterance is ~1650 audio tokens.
+
+### Workflow
+
+```bash
+# 1. SNAC-encode the corpus once (slow, resumable by id, append-only).
+#    ~1.1 utt/s on 6 CPU threads => ~21 h for the full 82k-utterance corpus.
+python scripts/prepare_orpheus.py --manifest data/processed/train.jsonl \
+  --root data/processed --out data/processed/orpheus_train.jsonl --workers 6
+python scripts/prepare_orpheus.py --manifest data/processed/val.jsonl \
+  --root data/processed --out data/processed/orpheus_val.jsonl --workers 6
+
+# 2. LoRA fine-tune (auto-resumes from the newest checkpoint)
+python scripts/train_orpheus.py -c configs/orpheus_fa.yaml        # 24 GB card, bf16
+python scripts/train_orpheus.py -c configs/orpheus_fa_4bit.yaml   # 4 GB card, NF4
+
+# 3. listen — omit --adapter for the base model, which is the A/B baseline
+python scripts/synthesize_orpheus.py --adapter runs/orpheus-fa/step_00004000 \
+  --text "سلام، حال شما چطور است؟" --out out_orpheus.wav
+
+# 4. objective intelligibility, on the same CER scale as the VITS line
+python scripts/eval_asr_orpheus.py --adapter base=none fa=runs/orpheus-fa/step_00004000 --n 24
+```
+
+### Training notes
+
+- **LoRA, not full fine-tuning.** A 3B model's AdamW state is ~48 GB. LoRA over the
+  attention *and* MLP projections trains <1% of the parameters; targeting the MLP matters
+  for TTS specifically, since prosody and timbre live in the feed-forward stack.
+- **The `pretrained` base, not the `ft` one.** Its audio-code embedding rows are already
+  trained (it is a pretrained TTS model, not a text LLM with new tokens bolted on), which
+  is what lets the embedding table stay frozen and makes LoRA sufficient.
+- **Only the audio region is supervised.** Training the text region would spend 3B
+  parameters re-learning Persian text modelling, competing with audio for the same weights.
+  The terminating EOS *is* supervised, or the model never learns to stop. Padding uses
+  Llama's `finetune_right_pad_id`, never EOS — padding with EOS teaches early stopping.
+- **Speaker conditioning is plain text** (`"mana: ..."`) inside the prompt, so an unseen
+  speaker degrades to a nearby voice instead of indexing out of bounds.
+- **Single speaker by default.** `mana` is 98.2 h of the corpus's 111.7 h; `gptinformal`
+  has 6.1 h, `fleurs` 7.0 h and the four `psd_*` speakers under 0.15 h each. Spending
+  4000 steps on a 98:1 imbalance is how the `psd_*` voices came out untrained in the VITS
+  run.
+- **Sampling knobs before compute.** `--temperature` / `--top-p` /
+  `--repetition-penalty` are Orpheus's analogue of VITS `noise_scale`, where sweeping
+  bought 40% relative CER in minutes against 1.5% from a 17k-step anneal. Sweep them
+  against CER before concluding the model needs more training.
+
+Status: data pipeline, training, synthesis and eval are implemented and the codec path is
+verified end-to-end on real audio. No Persian adapter has been trained yet — the GPU on
+this machine is unusable (the NVIDIA akmod is built only for kernels 7.2.5/7.2.7 while
+7.3.3 runs), and a 3B LoRA is not viable on CPU. Numbers will be filled in here when a
+run completes.
+
 ## License
 Code: Apache-2.0. Released weights: CC-BY-4.0 (see the model card that `push_to_hub.py` generates).
