@@ -23,8 +23,12 @@ if __name__ == "__main__":
     ap.add_argument("--text", required=True)
     ap.add_argument("--out", default="out.wav")
     ap.add_argument("--speaker", default="mana", help="speaker name (see speakers.json); mana is the clean 98 h voice")
-    ap.add_argument("--noise-scale", type=float, default=0.667)
-    ap.add_argument("--length-scale", type=float, default=1.0, help=">1 slower, <1 faster")
+    # Defaults tuned for THIS voice against ASR CER/WER (scripts/sweep_inference.py +
+    # scripts/verify_scales.py): 0.667/1.0 was Piper's generic default and scored CER ~0.326;
+    # 0.0/1.05 scores ~0.195 on the same sentences (-40% relative). noise_scale=0 uses the
+    # latent mean, which is both the most intelligible AND fully reproducible.
+    ap.add_argument("--noise-scale", type=float, default=0.0)
+    ap.add_argument("--length-scale", type=float, default=1.2, help=">1 slower, <1 faster")
     a = ap.parse_args()
 
     if a.onnx:

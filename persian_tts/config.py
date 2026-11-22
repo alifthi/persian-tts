@@ -65,6 +65,11 @@ class TrainConfig:
     eps: float = 1e-9
     lr_decay: float = 0.999875  # per epoch-equivalent; applied per step as decay**(1/steps_per_epoch)
     warmup_steps: int = 1000
+    # Cosine anneal to a fraction of the base LR, on top of warmup/lr_decay. Disabled when
+    # anneal_end_step == 0. Use to converge a run whose losses have gone flat at the base LR.
+    anneal_start_step: int = 0
+    anneal_end_step: int = 0
+    anneal_final_scale: float = 0.05  # LR multiplier reached at anneal_end_step
     grad_clip: float = 100.0
     precision: str = "bf16"  # bf16 | fp16 | fp32
     segment_size: int = 8192  # waveform samples decoded per item (random slice)

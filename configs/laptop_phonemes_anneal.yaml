@@ -1,0 +1,38 @@
+# Convergence phase for persian-vits-laptop-phonemes.
+#
+# Why: by step ~108k the run was flat -- train mel ~23.9-24.0 and val_mel_l1 pinned at
+# 0.4994 (best ever 0.4989) with grad_norm_g still ~750. The cause is the schedule:
+# lr_decay is applied per epoch-equivalent, so the LR was still ~2.0e-4 at step 108k,
+# identical to step 1000. The model was bouncing around a minimum at full learning rate.
+#
+# This config resumes the same run directory and cosine-anneals the LR from 2.0e-4 down
+# to 1.0e-5 (5%) between steps 107500 and 125000, then stops. Annealing a converged GAN
+# finetune is the standard way to cash in the remaining quality.
+name: persian-vits-laptop-phonemes
+out_dir: runs
+model: {}
+data:
+  root: data/processed
+  train_manifest: data/processed/train.jsonl
+  val_manifest: data/processed/val.jsonl
+  speakers: data/processed/speakers.json
+  text_frontend: phonemes
+  max_frames_per_batch: 6000
+  max_batch_size: 12
+  eval_batch_size: 1
+  num_workers: 4
+train:
+  init_from: data/pretrained/persian_init_phonemes.pt
+  freeze_decoder_steps: 2000  # long past; no effect on a resume at 108k
+  max_steps: 125000
+  learning_rate: 2.0e-4
+  learning_rate_d: 1.0e-4
+  warmup_steps: 1000
+  anneal_start_step: 107500
+  anneal_end_step: 125000
+  anneal_final_scale: 0.05  # -> 1.0e-5
+  precision: fp32  # no CUDA on this box right now; bf16 autocast on CPU is slower
+  log_every: 100
+  eval_every: 2500  # more frequent than the old run: best.pt should track the anneal
+  save_every: 2500
+  keep_last: 3

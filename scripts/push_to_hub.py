@@ -59,7 +59,31 @@ audio = sess.run(None, {{"input": ids, "input_lengths": np.array([ids.shape[1]])
                         "scales": np.array([0.667, 1.0, 0.8], dtype=np.float32), "sid": np.array([0])}})[0]
 sf.write("out.wav", audio[0, 0], {sr})
 ```
-`scales` = [noise_scale, length_scale (>1 is slower), unused]. The I/O follows the Piper ONNX convention.
+`scales` = [noise_scale, length_scale (>1 is slower), noise_w]. The I/O follows the Piper ONNX convention.
+
+### Recommended inference settings
+
+Use **`noise_scale=0.0`, `length_scale=1.2`**. These were tuned for this specific voice by
+grid-searching the scales against ASR character error rate, not inherited from Piper's generic
+defaults:
+
+| scales | CER | WER |
+|---|---|---|
+| **0.0 / 1.20 (recommended)** | **0.177** | **0.564** |
+| 0.0 / 1.125 | 0.178 | 0.572 |
+| 0.0 / 1.05 | 0.197 | 0.589 |
+| 0.0 / 1.00 | 0.196 | 0.587 |
+| 0.667 / 1.00 (Piper default) | 0.326 | 0.778 |
+
+Two findings worth knowing: `noise_scale` dominates (the generic 0.667 roughly doubles CER on
+this voice), and the model is clearest at ~20% slower than nominal speed. `noise_w` has **no
+effect at all** here -- this build uses a deterministic duration predictor (`use_sdp: false`),
+so the third scale is accepted only for Piper I/O compatibility.
+
+Scored with `openai/whisper-small` on held-out validation sentences; ground-truth human
+recordings score CER 0.179 on the same pipeline, so the recommended setting is close to the
+ASR's own error floor. `noise_scale=0` also makes synthesis deterministic (same text ->
+identical audio), which the stochastic default does not.
 
 ## Training data
 
@@ -78,6 +102,26 @@ other corpora are CC0 or MIT. Check that the license fits your use case before d
 ## Limitations
 Persian script omits short vowels, so the model infers them from context. Rare words, names and
 ambiguous homographs may be mispronounced; adding diacritics (fatha/kasra/damma) to the input helps.
+
+## Attribution (required)
+
+This model is released under **CC-BY-4.0**: you may use it commercially, modify it and redistribute
+it, **provided you credit the author**. Attribution is a condition of the licence, not a courtesy.
+
+> Persian VITS TTS — created by **{author}** ({author_url})
+
+```bibtex
+@misc{{{bibkey},
+  author       = {{{author}}},
+  title        = {{{name}: a Persian (Farsi) VITS text-to-speech model}},
+  year         = {{2026}},
+  howpublished = {{\\url{{https://huggingface.co/{repo_id}}}}},
+  note         = {{Licensed CC-BY-4.0}}
+}}
+```
+
+If you ship this voice in a product, keep the credit line somewhere a user can find it
+(about screen, docs, or model credits).
 """
 
 
@@ -90,6 +134,8 @@ def main():
     ap.add_argument("--repo-id", required=True)
     ap.add_argument("--name", default="Persian VITS")
     ap.add_argument("--samples-dir", default=None, help="optional folder of demo wavs")
+    ap.add_argument("--author", default="Ali Fathi", help="name credited in the CC-BY attribution block")
+    ap.add_argument("--author-url", default="https://github.com/alifthi", help="profile/repo URL for the credit line")
     ap.add_argument("--private", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--out", default="exports/hub_release")
@@ -124,7 +170,9 @@ def main():
     fe = ck["config"].get("data", {}).get("text_frontend", "chars")
     (out / "README.md").write_text(CARD.format(
         name=a.name, sr=ck["config"]["audio"]["sample_rate"], n_spk=len(ck["speakers"]), step=ck["step"],
-        frontend=fe, text_input=TEXT_INPUT[fe], data_table="\n".join(rows)), encoding="utf-8")
+        frontend=fe, text_input=TEXT_INPUT[fe], data_table="\n".join(rows),
+        author=a.author, author_url=a.author_url, repo_id=a.repo_id,
+        bibkey=a.repo_id.split("/")[-1].lower().replace("-", "_") + "_2026"), encoding="utf-8")
     print("release folder ready:", out)
     if a.dry_run:
         return

@@ -87,7 +87,17 @@ class Trainer:
         self.optim_d = torch.optim.AdamW(self.net_d.parameters(), t.learning_rate_d, betas=tuple(t.betas_d), eps=t.eps)
         steps_per_epoch = max(1, len(self.sampler))
         gamma = t.lr_decay ** (1.0 / steps_per_epoch)
-        lr_lambda = lambda s: min(1.0, (s + 1) / max(1, t.warmup_steps)) * gamma ** s  # noqa: E731
+
+        def anneal(s):
+            """Cosine multiplier in [anneal_final_scale, 1]; 1.0 when annealing is disabled."""
+            if t.anneal_end_step <= 0 or s <= t.anneal_start_step:
+                return 1.0
+            if s >= t.anneal_end_step:
+                return t.anneal_final_scale
+            frac = (s - t.anneal_start_step) / max(1, t.anneal_end_step - t.anneal_start_step)
+            return t.anneal_final_scale + (1.0 - t.anneal_final_scale) * 0.5 * (1.0 + math.cos(math.pi * frac))
+
+        lr_lambda = lambda s: min(1.0, (s + 1) / max(1, t.warmup_steps)) * gamma ** s * anneal(s)  # noqa: E731
         # decoder lr is 0 during the freeze window (AdamW decay is lr-scaled, so weights stay exact)
         dec_lambda = lambda s: 0.0 if s < t.freeze_decoder_steps else lr_lambda(s)  # noqa: E731
         self.sched_g = torch.optim.lr_scheduler.LambdaLR(self.optim_g, [lr_lambda, dec_lambda])
