@@ -115,7 +115,28 @@ def find_latest_checkpoint(out_dir: Path):
     return ckpts[-1] if ckpts else None
 
 
-def save_checkpoint(model, optimizer, scheduler, step, out_dir: Path, cfg):
+def prune_checkpoints(out_dir: Path, keep_last: int, best_step=None) -> list:
+    """Delete oldest checkpoints beyond ``keep_last``, always sparing the best.
+
+    best_val.json names a step. If pruning removes that step the run's best
+    result is unrecoverable and the A/B baseline for any later comparison is
+    gone, so the best checkpoint does not count against the budget.
+
+    Returns the directories removed.
+    """
+    ckpts = sorted(
+        (p for p in out_dir.glob("step_*") if p.is_dir()),
+        key=lambda p: int(p.name.split("_")[1]),
+    )
+    best_name = f"step_{best_step:08d}" if best_step is not None else None
+    prunable = [p for p in ckpts if p.name != best_name]
+    removed = prunable[: max(0, len(prunable) - keep_last)]
+    for old in removed:
+        shutil.rmtree(old, ignore_errors=True)
+    return removed
+
+
+def save_checkpoint(model, optimizer, scheduler, step, out_dir: Path, cfg, best_step=None):
     path = out_dir / f"step_{step:08d}"
     path.mkdir(parents=True, exist_ok=True)
     model.save_pretrained(path)  # LoRA adapter only: tens of MB, not 6 GB
@@ -130,14 +151,7 @@ def save_checkpoint(model, optimizer, scheduler, step, out_dir: Path, cfg):
     (path / "orpheus_config.json").write_text(
         json.dumps(orpheus_config_to_dict(cfg), indent=2), encoding="utf-8"
     )
-
-    # Prune, but never the 'best' link target.
-    ckpts = sorted(
-        (p for p in out_dir.glob("step_*") if p.is_dir()),
-        key=lambda p: int(p.name.split("_")[1]),
-    )
-    for old in ckpts[: -cfg.keep_last]:
-        shutil.rmtree(old, ignore_errors=True)
+    prune_checkpoints(out_dir, cfg.keep_last, best_step)
     return path
 
 
@@ -228,10 +242,11 @@ def main() -> int:
         )
         print(f"resumed from {latest} at step {start_step}")
 
-    best_val = float("inf")
+    best_val, best_step = float("inf"), None
     best_path = out_dir / "best_val.json"
     if best_path.exists():
-        best_val = json.loads(best_path.read_text())["val_loss"]
+        saved = json.loads(best_path.read_text())
+        best_val, best_step = saved["val_loss"], saved["step"]
 
     scaler = torch.amp.GradScaler(enabled=(precision == "fp16"))
     model.train()
@@ -288,22 +303,26 @@ def main() -> int:
                         if math.isinf(best_val)
                         else f" NEW BEST (-{delta:.4f}, -{pct:.2f}%)"
                     )
-                    best_val = val
+                    best_val, best_step = val, step
                     best_path.write_text(
                         json.dumps({"step": step, "val_loss": val}), encoding="utf-8"
                     )
-                    save_checkpoint(model, optimizer, scheduler, step, out_dir, cfg)
+                    save_checkpoint(
+                        model, optimizer, scheduler, step, out_dir, cfg, best_step
+                    )
                 print(f"step {step:7d} | val_loss {val:.4f}{flag}", flush=True)
 
             if step % cfg.save_every == 0:
-                p = save_checkpoint(model, optimizer, scheduler, step, out_dir, cfg)
+                p = save_checkpoint(
+                    model, optimizer, scheduler, step, out_dir, cfg, best_step
+                )
                 print(f"saved {p}", flush=True)
 
             if step >= cfg.max_steps:
                 break
 
-    save_checkpoint(model, optimizer, scheduler, step, out_dir, cfg)
-    print(f"finished at step {step}", flush=True)
+    save_checkpoint(model, optimizer, scheduler, step, out_dir, cfg, best_step)
+    print(f"finished at step {step} | best val_loss {best_val:.4f} at step {best_step}", flush=True)
     return 0
 
 

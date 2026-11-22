@@ -36,3 +36,4 @@ include = ["persian_tts*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["slow: builds a model and runs training subprocesses (~1 min); deselect with -m 'not slow'"]
