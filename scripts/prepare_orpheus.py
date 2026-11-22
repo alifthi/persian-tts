@@ -34,6 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from persian_tts.orpheus.codec import (  # noqa: E402
     CODES_PER_FRAME,
+    FRAMES_PER_SECOND,
     SNAC_SAMPLE_RATE,
     SnacTokenizer,
 )
@@ -126,12 +127,13 @@ def main() -> int:
     print(f"{len(todo)} of {len(rows)} utterances left to encode", flush=True)
 
     # Longest audio we can afford, in SNAC frames, after reserving the text
-    # budget. ~12.5 frames/s, 7 tokens/frame.
+    # budget, at the measured frame rate (7 tokens per frame).
     max_audio_tokens = args.max_length - args.max_text_tokens - SCAFFOLD_TOKENS
     max_frames = max_audio_tokens // CODES_PER_FRAME
+    max_seconds = max_frames / FRAMES_PER_SECOND
     print(
         f"audio budget: {max_audio_tokens} tokens = {max_frames} frames "
-        f"~= {max_frames / 12.5:.1f}s",
+        f"~= {max_seconds:.1f}s",
         flush=True,
     )
 
@@ -146,7 +148,7 @@ def main() -> int:
         for i, row in enumerate(todo):
             if args.limit and written >= args.limit:
                 break
-            if row.get("duration", 0) > max_frames / 12.5:
+            if row.get("duration", 0) > max_seconds:
                 skipped_long += 1
                 continue
             try:

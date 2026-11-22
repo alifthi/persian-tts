@@ -51,6 +51,10 @@ CODES_PER_FRAME = 7
 #: Audio sample rate SNAC-24khz operates at. Input audio must be resampled.
 SNAC_SAMPLE_RATE = 24000
 
+#: Measured SNAC frame rate on this corpus (nominal 12.5; the encoder's strides
+#: do not divide 24 kHz exactly). Used to convert seconds <-> token budgets.
+FRAMES_PER_SECOND = 11.77
+
 #: (level, index-within-frame) that each flat slot draws from.
 #: Index is relative to the start of the frame at that level.
 SLOT_LAYOUT = (
