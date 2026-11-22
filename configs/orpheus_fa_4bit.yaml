@@ -1,0 +1,44 @@
+# Orpheus-3B Persian LoRA on a 4 GB card (RTX 3050 Mobile).
+#
+# 3B weights do not fit in 4 GB at any float precision, so the base is NF4
+# 4-bit quantized (~1.8 GB) with double quantization, leaving room for
+# activations. batch_size must stay 1; the effective batch is recovered through
+# gradient accumulation, and gradient checkpointing trades ~30% speed for the
+# activation memory that otherwise OOMs on a 2048-token sequence.
+#
+# Expect roughly 4x the wall-clock of the bf16 config per step. Verify the card
+# is actually visible (`nvidia-smi`) before launching: on this machine the
+# driver has repeatedly been broken for the running kernel, and PyTorch then
+# falls back to CPU silently -- `mem 0.00GB` in the log means that happened.
+
+base_model: unsloth/orpheus-3b-0.1-pretrained
+snac_model: hubertsiuzdak/snac_24khz
+load_in_4bit: true
+attn_implementation: sdpa
+
+# A slightly smaller adapter: the optimizer state for r=32 over 7 projections
+# is not free on a card this small.
+lora_r: 16
+lora_alpha: 32
+lora_dropout: 0.05
+
+train_manifest: data/processed/orpheus_train.jsonl
+val_manifest: data/processed/orpheus_val.jsonl
+speakers: [mana]
+max_length: 1536
+
+learning_rate: 2.0e-4
+lr_scheduler: cosine
+warmup_steps: 100
+max_steps: 4000
+batch_size: 1
+grad_accum: 16
+max_grad_norm: 1.0
+precision: fp16  # 3050 is Ampere and does support bf16; fp16 is a touch faster here
+gradient_checkpointing: true
+
+output_dir: runs/orpheus-fa-4bit
+log_every: 10
+eval_every: 250
+save_every: 250
+keep_last: 3

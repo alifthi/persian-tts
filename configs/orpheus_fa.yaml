@@ -1,0 +1,40 @@
+# Orpheus-3B Persian LoRA fine-tune.
+#
+# Targets a single 24 GB GPU in bf16. For the 4 GB RTX 3050 in this laptop, use
+# configs/orpheus_fa_4bit.yaml instead.
+#
+# Data is the existing corpus, SNAC-encoded once by scripts/prepare_orpheus.py.
+# Restricted to `mana` by default: that speaker is 98 of the corpus's 112 hours,
+# and the psd_* speakers have <100 utterances each (effectively untrained in the
+# VITS run too). A single-speaker adapter is a far better use of 4000 steps than
+# a multi-speaker one with a 98:1 imbalance.
+
+base_model: unsloth/orpheus-3b-0.1-pretrained
+snac_model: hubertsiuzdak/snac_24khz
+load_in_4bit: false
+attn_implementation: sdpa
+
+lora_r: 32
+lora_alpha: 64
+lora_dropout: 0.05
+
+train_manifest: data/processed/orpheus_train.jsonl
+val_manifest: data/processed/orpheus_val.jsonl
+speakers: [mana]
+max_length: 2048
+
+learning_rate: 2.0e-4
+lr_scheduler: cosine
+warmup_steps: 100
+max_steps: 4000
+batch_size: 2
+grad_accum: 8
+max_grad_norm: 1.0
+precision: bf16
+gradient_checkpointing: true
+
+output_dir: runs/orpheus-fa
+log_every: 10
+eval_every: 250
+save_every: 250
+keep_last: 3
