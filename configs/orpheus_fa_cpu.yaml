@@ -1,0 +1,55 @@
+# Orpheus-3B Persian LoRA, CPU-feasible schedule.
+#
+# The GPU on this machine is unusable (NVIDIA akmod built only for kernels
+# 7.2.5/7.2.7 while 7.3.3 runs), so this config is sized against MEASURED CPU
+# throughput rather than the 24 GB-card defaults in orpheus_fa.yaml.
+#
+# Measured on this box (16 threads, fp32, gradient checkpointing on):
+#   1270-token sequence -> 77.9 s / micro-step  => 4000 steps @ ga=8 = 28.8 days
+# which is not a schedule anyone will wait for. Three changes make it feasible:
+#
+#  1. max_audio_tokens: 512 (~6.2 s of speech) keeps 76% of the `mana` rows but
+#     cuts the sequence to ~40% of the benchmark length. Attention is quadratic,
+#     so the step cost falls by much more than the length does.
+#  2. grad_accum: 4 rather than 8/16. With a single speaker and a homogeneous
+#     corpus the gradient is already low-variance; a 4-sequence effective batch
+#     is enough and quarters the time per optimizer step.
+#  3. max_steps: 600 with a proportionally shortened warmup. A LoRA adapting a
+#     pretrained TTS model to one language and one voice moves fast early --
+#     the benchmark showed loss 4.3032 -> 4.0930 (-4.9%) in four micro-steps.
+#     600 steps is a real adapter, not a smoke test, and is revisitable.
+#
+# Expect ~1500 effective training utterances seen. This is deliberately a FIRST
+# adapter to establish a measured CER baseline, not the final model. Rerun
+# orpheus_fa.yaml unchanged once the GPU works.
+
+base_model: unsloth/orpheus-3b-0.1-pretrained
+snac_model: hubertsiuzdak/snac_24khz
+load_in_4bit: false      # bitsandbytes has no CPU kernels
+attn_implementation: sdpa
+
+lora_r: 16
+lora_alpha: 32
+lora_dropout: 0.05
+
+train_manifest: data/processed/orpheus_train.jsonl
+val_manifest: data/processed/orpheus_val.jsonl
+speakers: [mana]
+max_length: 1024
+max_audio_tokens: 512
+
+learning_rate: 2.0e-4
+lr_scheduler: cosine
+warmup_steps: 20
+max_steps: 600
+batch_size: 1
+grad_accum: 4
+max_grad_norm: 1.0
+precision: fp32          # CPU bf16 autocast is slower than fp32
+gradient_checkpointing: true
+
+output_dir: runs/orpheus-fa-cpu
+log_every: 5
+eval_every: 50
+save_every: 50
+keep_last: 3

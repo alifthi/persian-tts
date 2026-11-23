@@ -195,10 +195,12 @@ def main() -> int:
     tokenizer = AutoTokenizer.from_pretrained(cfg.base_model)
 
     train_ds = OrpheusDataset(
-        cfg.train_manifest, tokenizer, max_length=cfg.max_length, speakers=cfg.speakers
+        cfg.train_manifest, tokenizer, max_length=cfg.max_length,
+        speakers=cfg.speakers, max_audio_tokens=cfg.max_audio_tokens,
     )
     val_ds = OrpheusDataset(
-        cfg.val_manifest, tokenizer, max_length=cfg.max_length, speakers=cfg.speakers
+        cfg.val_manifest, tokenizer, max_length=cfg.max_length,
+        speakers=cfg.speakers, max_audio_tokens=cfg.max_audio_tokens,
     )
     print(f"train {len(train_ds)} utts | val {len(val_ds)} utts")
 
@@ -264,7 +266,7 @@ def main() -> int:
                 out = model(**batch)
                 loss = out.loss / cfg.grad_accum
             scaler.scale(loss).backward()
-            accum_loss += float(out.loss)
+            accum_loss += float(out.loss.detach())
             accum_n += 1
 
             if (micro + 1) % cfg.grad_accum:

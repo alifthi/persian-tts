@@ -34,6 +34,7 @@ class OrpheusDataset(Dataset):
         tokenizer,
         max_length: int = 2048,
         speakers: Optional[Sequence[str]] = None,
+        max_audio_tokens: int = 0,
     ) -> None:
         self.tokenizer = tokenizer
         self.max_length = max_length
@@ -56,6 +57,12 @@ class OrpheusDataset(Dataset):
             if not tokens or len(tokens) % CODES_PER_FRAME or not is_audio_token(tokens[0]):
                 skipped_bad += 1
                 continue
+            # Transformer cost grows superlinearly in sequence length, so on CPU
+            # a handful of long utterances dominate the epoch. Capping the audio
+            # length trades corpus coverage for step rate; 0 disables.
+            if max_audio_tokens and len(tokens) > max_audio_tokens:
+                skipped_long += 1
+                continue
             self.rows.append(row)
 
         if skipped_bad:
@@ -65,6 +72,11 @@ class OrpheusDataset(Dataset):
             )
         if skipped_speaker:
             print(f"{manifest}: skipped {skipped_speaker} rows (speaker not in allow-list)")
+        if skipped_long:
+            print(
+                f"{manifest}: skipped {skipped_long} rows longer than "
+                f"{max_audio_tokens} audio tokens"
+            )
 
         # Built once so the trainer can report, and so the length sampler can
         # bucket without re-tokenizing.

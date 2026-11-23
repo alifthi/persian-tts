@@ -56,6 +56,10 @@ class OrpheusTrainConfig:
     val_manifest: str = "data/processed/orpheus_val.jsonl"
     speakers: Optional[List[str]] = None
     max_length: int = 2048
+    #: Drop utterances with more than this many audio tokens (0 = keep all).
+    #: Transformer cost is superlinear in sequence length, so on CPU a few long
+    #: clips dominate the epoch. 512 tokens ~= 6.2s and keeps 76% of `mana`.
+    max_audio_tokens: int = 0
 
     # --- optimisation ---
     learning_rate: float = 2e-4
