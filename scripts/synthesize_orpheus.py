@@ -81,6 +81,16 @@ def main() -> int:
     ap.add_argument("--max-seconds", type=float, default=20.0)
     ap.add_argument("--seed", type=int, default=None)
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    # fp32 on CPU costs 13.2 GB for a 3B model; bf16 halves that to ~6.6 GB and
+    # is what makes synthesis possible beside a running trainer on this box.
+    # Generation quality is essentially unaffected (no gradients involved).
+    ap.add_argument("--dtype", default="auto", choices=["auto", "fp32", "bf16", "fp16"])
+    ap.add_argument(
+        "--no-merge",
+        action="store_true",
+        help="keep the LoRA wrapper instead of merging it in; slower per token "
+             "but avoids materializing a second copy of the merged weights",
+    )
     args = ap.parse_args()
 
     if args.seed is not None:
@@ -89,14 +99,20 @@ def main() -> int:
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     tokenizer = AutoTokenizer.from_pretrained(args.base_model)
-    dtype = torch.float16 if args.device == "cuda" else torch.float32
-    model = AutoModelForCausalLM.from_pretrained(args.base_model, dtype=dtype).to(args.device)
+    if args.dtype == "auto":
+        dtype = torch.float16 if args.device == "cuda" else torch.bfloat16
+    else:
+        dtype = {"fp32": torch.float32, "bf16": torch.bfloat16, "fp16": torch.float16}[args.dtype]
+    model = AutoModelForCausalLM.from_pretrained(
+        args.base_model, dtype=dtype, low_cpu_mem_usage=True
+    ).to(args.device)
 
     if args.adapter:
         from peft import PeftModel
 
         model = PeftModel.from_pretrained(model, args.adapter)
-        model = model.merge_and_unload()  # fold LoRA in; faster generation
+        if not args.no_merge:
+            model = model.merge_and_unload()  # fold LoRA in; faster generation
     model.eval()
     model.config.use_cache = True
 
