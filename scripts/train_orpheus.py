@@ -107,6 +107,47 @@ def build_model(cfg, device, dtype):
     return model
 
 
+_STOP = {"requested": False}
+
+
+def _install_sigterm_handler():
+    """Finish the current optimizer step, save, and exit cleanly on SIGTERM/SIGINT.
+
+    An open-ended run is stopped by the user, so the stop path has to be the
+    normal path: SIGKILL would lose every step since the last ``save_every``.
+    """
+    import signal
+
+    def _handler(signum, frame):  # noqa: ARG001
+        if _STOP["requested"]:
+            return
+        _STOP["requested"] = True
+        print(
+            f"\nreceived signal {signum}: finishing the current step, "
+            "saving a checkpoint, then exiting",
+            flush=True,
+        )
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(sig, _handler)
+
+
+def _worker_ignore_signals(worker_id: int) -> None:  # noqa: ARG001
+    """DataLoader workers must ignore SIGTERM so a clean stop stays clean.
+
+    systemd sends SIGTERM to every process in the unit's cgroup, workers
+    included. A worker that dies first makes the parent's very next
+    ``next(loader)`` raise "DataLoader worker exited unexpectedly", which
+    aborts the shutdown path before it can checkpoint. Ignoring the signal in
+    workers lets the parent finish its step, save, and exit; the workers are
+    reaped when the parent does.
+    """
+    import signal
+
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+
+
 def find_latest_checkpoint(out_dir: Path):
     ckpts = sorted(
         (p for p in out_dir.glob("step_*") if p.is_dir()),
@@ -211,6 +252,7 @@ def main() -> int:
         collate_fn=collate,
         num_workers=2,
         drop_last=True,
+        worker_init_fn=_worker_ignore_signals,
     )
     val_loader = DataLoader(
         val_ds, batch_size=cfg.batch_size, shuffle=False, collate_fn=collate
@@ -242,7 +284,18 @@ def main() -> int:
         set_peft_model_state_dict(
             model, load_file(latest / "adapter_model.safetensors")
         )
+        # A resume must not silently inherit the previous run's learning rate.
+        # optimizer.load_state_dict() restores the old param_group lr, and
+        # LambdaLR.load_state_dict() restores the old base_lrs, so the config's
+        # learning_rate is overwritten by whatever the last run used. Re-assert
+        # it: the config is the source of truth for the schedule's amplitude,
+        # the checkpoint only for its position.
+        for group in optimizer.param_groups:
+            group["lr"] = cfg.learning_rate
+            group["initial_lr"] = cfg.learning_rate
+        scheduler.base_lrs = [cfg.learning_rate] * len(scheduler.base_lrs)
         print(f"resumed from {latest} at step {start_step}")
+        print(f"learning rate re-asserted from config: {cfg.learning_rate:.2e}")
 
     best_val, best_step = float("inf"), None
     best_path = out_dir / "best_val.json"
@@ -251,6 +304,7 @@ def main() -> int:
         best_val, best_step = saved["val_loss"], saved["step"]
 
     scaler = torch.amp.GradScaler(enabled=(precision == "fp16"))
+    _install_sigterm_handler()
     model.train()
     step = start_step
     accum_loss, accum_n = 0.0, 0
@@ -259,6 +313,8 @@ def main() -> int:
     print(f"training to step {cfg.max_steps}", flush=True)
     while step < cfg.max_steps:
         for micro, batch in enumerate(train_loader):
+            if _STOP["requested"] and micro % cfg.grad_accum == 0:
+                break  # clean boundary: nothing half-accumulated to throw away
             batch = {k: v.to(device) for k, v in batch.items()}
             with torch.autocast(
                 device_type=device, dtype=dtype, enabled=dtype != torch.float32
@@ -320,11 +376,14 @@ def main() -> int:
                 )
                 print(f"saved {p}", flush=True)
 
-            if step >= cfg.max_steps:
+            if step >= cfg.max_steps or _STOP["requested"]:
                 break
+        if _STOP["requested"]:
+            break
 
     save_checkpoint(model, optimizer, scheduler, step, out_dir, cfg, best_step)
-    print(f"finished at step {step} | best val_loss {best_val:.4f} at step {best_step}", flush=True)
+    reason = "stopped by signal" if _STOP["requested"] else "finished"
+    print(f"{reason} at step {step} | best val_loss {best_val:.4f} at step {best_step}", flush=True)
     return 0
 
 
